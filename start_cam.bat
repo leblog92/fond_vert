@@ -1,2 +1,2 @@
 @echo off
-python cam_bd.py
+start /min pythonw cam_bd.pyw
