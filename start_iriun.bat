@@ -1,2 +1,3 @@
 @echo off
-start /min pythonw cam_iriun.pyw
+start /min python cam_iriun.pyw
+pause
