@@ -33,16 +33,132 @@ class GreenScreenConfig:
         self.edge_threshold = tk.DoubleVar(value=0.5)
         self.matting_strength = tk.DoubleVar(value=0.3)
 
+class CameraAdapter:
+    """Gère l'adaptation des différentes proportions de caméra"""
+    
+    # Format cible
+    TARGET_WIDTH = 1932
+    TARGET_HEIGHT = 2576
+    TARGET_ASPECT = TARGET_WIDTH / TARGET_HEIGHT  # ~0.75
+    
+    def __init__(self):
+        self.camera_width = None
+        self.camera_height = None
+        self.camera_aspect = None
+        
+    def set_camera_dimensions(self, width, height):
+        """Enregistre les dimensions de la caméra"""
+        self.camera_width = width
+        self.camera_height = height
+        self.camera_aspect = width / height if height > 0 else 0
+        print(f"Caméra détectée: {width}x{height} (ratio: {self.camera_aspect:.3f})")
+        
+    def get_adaptation_method(self):
+        """Détermine la méthode d'adaptation nécessaire"""
+        if self.camera_aspect is None:
+            return "unknown"
+            
+        target_aspect = self.TARGET_ASPECT
+        
+        if abs(self.camera_aspect - target_aspect) < 0.01:
+            return "exact_match"
+        elif self.camera_aspect > target_aspect:
+            return "wider_than_target"  # Caméra plus large
+        else:
+            return "taller_than_target"  # Caméra plus haute
+    
+    def adapt_frame_to_target(self, frame):
+        """Adapte le frame de la caméra au format cible"""
+        if frame is None:
+            return None
+            
+        h, w = frame.shape[:2]
+        method = self.get_adaptation_method()
+        
+        if method == "exact_match":
+            # Déjà au bon format
+            return cv2.resize(frame, (self.TARGET_WIDTH, self.TARGET_HEIGHT))
+            
+        elif method == "wider_than_target":
+            # Caméra plus large: on recadre horizontalement
+            target_h = self.TARGET_HEIGHT
+            target_w = self.TARGET_WIDTH
+            
+            # Calculer le facteur d'échelle pour la hauteur
+            scale = target_h / h
+            new_w = int(w * scale)
+            
+            # Redimensionner pour que la hauteur corresponde
+            resized = cv2.resize(frame, (new_w, target_h))
+            
+            # Recadrer au centre pour obtenir la largeur cible
+            start_x = (new_w - target_w) // 2
+            if start_x < 0:
+                start_x = 0
+            cropped = resized[:, start_x:start_x + target_w]
+            
+            # Si le recadrage a réduit la largeur, redimensionner
+            if cropped.shape[1] != target_w:
+                cropped = cv2.resize(cropped, (target_w, target_h))
+                
+            return cropped
+            
+        elif method == "taller_than_target":
+            # Caméra plus haute: on recadre verticalement
+            target_h = self.TARGET_HEIGHT
+            target_w = self.TARGET_WIDTH
+            
+            # Calculer le facteur d'échelle pour la largeur
+            scale = target_w / w
+            new_h = int(h * scale)
+            
+            # Redimensionner pour que la largeur corresponde
+            resized = cv2.resize(frame, (target_w, new_h))
+            
+            # Recadrer au centre pour obtenir la hauteur cible
+            start_y = (new_h - target_h) // 2
+            if start_y < 0:
+                start_y = 0
+            cropped = resized[start_y:start_y + target_h, :]
+            
+            # Si le recadrage a réduit la hauteur, redimensionner
+            if cropped.shape[0] != target_h:
+                cropped = cv2.resize(cropped, (target_w, target_h))
+                
+            return cropped
+            
+        else:
+            # Méthode inconnue: redimensionnement simple
+            return cv2.resize(frame, (self.TARGET_WIDTH, self.TARGET_HEIGHT))
+    
+    def get_adaptation_info(self):
+        """Retourne des informations sur l'adaptation"""
+        if self.camera_aspect is None:
+            return "Caméra non détectée"
+            
+        method = self.get_adaptation_method()
+        infos = {
+            "exact_match": "Format parfait - aucun ajustement",
+            "wider_than_target": "Caméra plus large - recadrage horizontal",
+            "taller_than_target": "Caméra plus haute - recadrage vertical",
+            "unknown": "Format inconnu"
+        }
+        
+        return f"Format caméra: {self.camera_width}x{self.camera_height} (ratio: {self.camera_aspect:.3f})\nMéthode: {infos.get(method, 'Adaptation standard')}"
+
 class SalonBDApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Salon BD - Photomaton")
+        self.root.title("Salon BD - Photomaton (Adaptatif)")
         self.root.geometry("1600x900")
         
         # Configuration des dossiers
         self.images_dir = Path(__file__).parent / "images"
         self.output_dir = Path(os.environ['USERPROFILE']) / "Pictures" / "SalonBD"
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Adaptateur de caméra
+        self.camera_adapter = CameraAdapter()
         
         # Charger la configuration
         self.load_config()
@@ -65,6 +181,7 @@ class SalonBDApp:
         self.zoom_factor = tk.DoubleVar(value=1.0)
         self.preview_active = False
         self.green_config = GreenScreenConfig()
+        self.adaptation_mode = tk.StringVar(value="auto")  # auto, crop, stretch, pad
         
         # Charger les images de fond et premier plan
         self.load_backgrounds()
@@ -227,9 +344,26 @@ class SalonBDApp:
         
         ttk.Button(btn_frame, text="↻ Scanner", command=self.scan_cameras, width=12).grid(row=0, column=2, padx=2)
         
+        # Informations caméra
+        self.camera_info_label = ttk.Label(camera_frame, text="Format: Non détecté", foreground="blue")
+        self.camera_info_label.grid(row=2, column=0, columnspan=2, pady=2)
+        
+        # Sélection du mode d'adaptation
+        adapt_frame = ttk.LabelFrame(control_frame, text="Adaptation format", padding="5")
+        adapt_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        
+        ttk.Radiobutton(adapt_frame, text="Auto (recommandé)", variable=self.adaptation_mode, 
+                       value="auto", command=self.update_preview).grid(row=0, column=0, sticky=tk.W)
+        ttk.Radiobutton(adapt_frame, text="Recadrage", variable=self.adaptation_mode, 
+                       value="crop", command=self.update_preview).grid(row=1, column=0, sticky=tk.W)
+        ttk.Radiobutton(adapt_frame, text="Étirement", variable=self.adaptation_mode, 
+                       value="stretch", command=self.update_preview).grid(row=2, column=0, sticky=tk.W)
+        ttk.Radiobutton(adapt_frame, text="Lettres noires", variable=self.adaptation_mode, 
+                       value="pad", command=self.update_preview).grid(row=3, column=0, sticky=tk.W)
+        
         # Sélection du set
         set_frame = ttk.LabelFrame(control_frame, text="Set", padding="5")
-        set_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        set_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
         ttk.Label(set_frame, text="Sélection:").grid(row=0, column=0, sticky=tk.W, pady=2)
         set_combo = ttk.Combobox(set_frame, textvariable=self.current_set, 
@@ -242,7 +376,7 @@ class SalonBDApp:
         
         # Ajustements position
         position_frame = ttk.LabelFrame(control_frame, text="Ajustement position", padding="5")
-        position_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        position_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
         ttk.Label(position_frame, text="X:").grid(row=0, column=0, sticky=tk.W, pady=2)
         x_scale = ttk.Scale(position_frame, from_=-200, to=200, orient=tk.HORIZONTAL,
@@ -262,11 +396,11 @@ class SalonBDApp:
         
         # Bouton de capture
         ttk.Button(control_frame, text="📸 Prendre la photo", 
-                  command=self.capture_photo, style="Big.TButton").grid(row=3, column=0, columnspan=2, pady=10)
+                  command=self.capture_photo, style="Big.TButton").grid(row=4, column=0, columnspan=2, pady=10)
         
         # Informations set
         self.info_text = tk.Text(control_frame, height=8, width=35, state=tk.DISABLED)
-        self.info_text.grid(row=4, column=0, columnspan=2, pady=5)
+        self.info_text.grid(row=5, column=0, columnspan=2, pady=5)
         
         # Frame pour l'aperçu
         preview_frame = ttk.LabelFrame(parent, text="Aperçu", padding="10")
@@ -503,9 +637,18 @@ class SalonBDApp:
         self.camera = cv2.VideoCapture(camera_idx)
         
         if self.camera.isOpened():
-            # Définir la résolution
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.config["camera_settings"]["width"])
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config["camera_settings"]["height"])
+            # Obtenir les dimensions réelles de la caméra
+            width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            # Mettre à jour l'adaptateur
+            self.camera_adapter.set_camera_dimensions(width, height)
+            
+            # Mettre à jour l'affichage des informations
+            self.camera_info_label.config(
+                text=self.camera_adapter.get_adaptation_info(),
+                foreground="green" if width > 0 else "red"
+            )
             
             self.camera_running = True
             self.preview_active = True
@@ -513,7 +656,7 @@ class SalonBDApp:
             # Mettre à jour l'interface
             self.start_cam_btn.config(state=tk.DISABLED)
             self.stop_cam_btn.config(state=tk.NORMAL)
-            self.status_label.config(text=f"Statut: Caméra {camera_idx} active")
+            self.status_label.config(text=f"Statut: Caméra {camera_idx} active ({width}x{height})")
             
             # Démarrer la mise à jour
             self.update_camera()
@@ -533,6 +676,7 @@ class SalonBDApp:
         self.start_cam_btn.config(state=tk.NORMAL)
         self.stop_cam_btn.config(state=tk.DISABLED)
         self.status_label.config(text="Statut: Caméra arrêtée")
+        self.camera_info_label.config(text="Format: Non détecté", foreground="blue")
         
         # Nettoyer l'affichage
         self.camera_label.config(image='')
@@ -543,8 +687,11 @@ class SalonBDApp:
         if self.camera_running and self.camera:
             ret, frame = self.camera.read()
             if ret:
+                # Adapter le frame au format cible
+                adapted_frame = self.adapt_camera_frame(frame)
+                
                 # Redimensionner pour l'affichage
-                frame_resized = cv2.resize(frame, (400, 533))
+                frame_resized = cv2.resize(adapted_frame, (400, 533))
                 frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
                 
                 # Convertir en ImageTk
@@ -555,12 +702,71 @@ class SalonBDApp:
                 self.camera_label.imgtk = imgtk
                 self.camera_label.configure(image=imgtk)
                 
-                # Mettre à jour l'aperçu
+                # Mettre à jour l'aperçu avec le frame adapté
                 if self.preview_active:
-                    self.update_preview(frame)
+                    self.update_preview(adapted_frame)
             
             # Planifier la prochaine mise à jour
             self.root.after(30, self.update_camera)
+    
+    def adapt_camera_frame(self, frame):
+        """Adapte le frame de la caméra au format cible selon le mode choisi"""
+        mode = self.adaptation_mode.get()
+        
+        if mode == "auto":
+            # Mode automatique: utilise l'adaptateur intelligent
+            return self.camera_adapter.adapt_frame_to_target(frame)
+        
+        elif mode == "crop":
+            # Recadrage forcé
+            h, w = frame.shape[:2]
+            target_h = CameraAdapter.TARGET_HEIGHT
+            target_w = CameraAdapter.TARGET_WIDTH
+            
+            # Calculer le meilleur facteur d'échelle
+            scale = max(target_w / w, target_h / h)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            
+            resized = cv2.resize(frame, (new_w, new_h))
+            
+            # Recadrer au centre
+            start_x = (new_w - target_w) // 2
+            start_y = (new_h - target_h) // 2
+            cropped = resized[start_y:start_y+target_h, start_x:start_x+target_w]
+            
+            return cropped
+        
+        elif mode == "stretch":
+            # Étirement pur
+            return cv2.resize(frame, (CameraAdapter.TARGET_WIDTH, CameraAdapter.TARGET_HEIGHT))
+        
+        elif mode == "pad":
+            # Ajout de lettres noires pour préserver le ratio
+            h, w = frame.shape[:2]
+            target_h = CameraAdapter.TARGET_HEIGHT
+            target_w = CameraAdapter.TARGET_WIDTH
+            
+            # Calculer le facteur d'échelle pour rentrer dans le cadre
+            scale = min(target_w / w, target_h / h)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            
+            resized = cv2.resize(frame, (new_w, new_h))
+            
+            # Créer un canevas noir
+            canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+            
+            # Centrer l'image redimensionnée
+            start_x = (target_w - new_w) // 2
+            start_y = (target_h - new_h) // 2
+            canvas[start_y:start_y+new_h, start_x:start_x+new_w] = resized
+            
+            return canvas
+        
+        else:
+            # Fallback
+            return cv2.resize(frame, (CameraAdapter.TARGET_WIDTH, CameraAdapter.TARGET_HEIGHT))
     
     def update_preview(self, event=None, camera_frame=None):
         """Met à jour l'aperçu avec la composition"""
@@ -568,9 +774,10 @@ class SalonBDApp:
             return
             
         if camera_frame is None and self.camera_running and self.camera:
-            ret, camera_frame = self.camera.read()
+            ret, frame = self.camera.read()
             if not ret:
                 return
+            camera_frame = self.adapt_camera_frame(frame)
         
         if camera_frame is not None:
             set_name = self.current_set.get()
@@ -607,7 +814,7 @@ class SalonBDApp:
         zone_w, zone_h, zone_x, zone_y = config.zone_visible
         zoom = self.zoom_factor.get()
         
-        # Redimensionner la caméra
+        # Redimensionner la caméra (maintenant au format cible)
         new_h = int(zone_h * zoom)
         new_w = int(zone_w * zoom)
         camera_resized = cv2.resize(camera_frame, (new_w, new_h))
@@ -719,13 +926,16 @@ class SalonBDApp:
             messagebox.showerror("Erreur", "Caméra non disponible. Démarrez la caméra d'abord.")
             return
         
-        ret, camera_frame = self.camera.read()
+        ret, frame = self.camera.read()
         if not ret:
             messagebox.showerror("Erreur", "Impossible de capturer l'image")
             return
         
+        # Adapter le frame au format cible
+        adapted_frame = self.adapt_camera_frame(frame)
+        
         set_name = self.current_set.get()
-        composed = self.create_composition(camera_frame, set_name)
+        composed = self.create_composition(adapted_frame, set_name)
         
         if composed is not None:
             # Générer un nom de fichier
@@ -747,7 +957,7 @@ class SalonBDApp:
     
     def __del__(self):
         """Nettoyage à la fermeture"""
-        if self.camera:
+        if hasattr(self, 'camera') and self.camera:
             self.camera_running = False
             self.camera.release()
 
