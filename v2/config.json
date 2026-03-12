@@ -2,14 +2,21 @@
     "camera_settings": {
         "width": 1932,
         "height": 2576,
-        "device_index": 1
+        "default_device_index": 1
     },
     "green_screen": {
-        "lower_hue": 40,
-        "upper_hue": 80,
+        "lower_hue": 35,
+        "upper_hue": 85,
         "lower_saturation": 40,
         "upper_saturation": 255,
         "lower_value": 40,
         "upper_value": 255
+    },
+    "matting": {
+        "erosion": 1,
+        "dilation": 1,
+        "blur": 3,
+        "edge_threshold": 0.5,
+        "matting_strength": 0.3
     }
 }

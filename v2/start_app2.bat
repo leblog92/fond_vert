@@ -29,7 +29,7 @@ if %errorlevel% neq 0 (
 :: Lancer l'application
 echo.
 echo Lancement de l'application...
-start /B python app.py
+start /B python app2.py
 
 echo.
 echo L'application est lancee.

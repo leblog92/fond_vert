@@ -1,0 +1,1 @@
+python camera_emulator.py photo.jpg
