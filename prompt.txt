@@ -1,0 +1,11 @@
+
+
+je souhaite créer une application python avec interface graphique pour PC pour prendre des photos de personnes sur fond vert avec un décor (fond*.png), un premier plan ()
+champ nom (fichier)
+champ email (métadonnées) rentrée dans les métadonnées
+lors de la prise de vue, je souhaite que le fichier soit enregistré dans le dossier %userprofile%/pictures/salonBD, je souhaite que le nom du fichier  du fichier je souhaite que le nom soit incorpo
+environement :
+ ordinateur portable avec windows 11
+ python version 3.13.7
+ caméra C270 HD Logitech 1280*720 connectée en USB
+ 
