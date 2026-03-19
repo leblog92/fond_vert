@@ -115,64 +115,77 @@ class ChromaKeyApp:
                 'data.xlsx',
                 './data.xlsx',
                 '../data.xlsx',
-                Path(__file__).parent / 'data.xlsx'
+                str(Path(__file__).parent / 'data.xlsx') if '__file__' in dir() else 'data.xlsx'
             ]
             
             excel_path = None
             for path in possible_paths:
-                if os.path.exists(path):
+                if path and os.path.exists(path):
                     excel_path = path
                     break
             
             if excel_path:
-                df = pd.read_excel(excel_path, sheet_name='Feuil1', skiprows=3)
+                # Lire le fichier Excel en gérant les NaN
+                df = pd.read_excel(excel_path, sheet_name='Feuil1', skiprows=3, header=None)
+                
+                # Remplacer les NaN par 0 pour les colonnes numériques
+                df = df.fillna(0)
+                
                 self.sets_data = {}
                 for _, row in df.iterrows():
-                    set_name = str(row.iloc[0]).lower().replace(' ', '')
-                    self.sets_data[set_name] = {
-                        'background': row.iloc[1],
-                        'foreground': row.iloc[2],
-                        'bg_width': int(row.iloc[3]),
-                        'bg_height': int(row.iloc[4]),
-                        'visible_width': int(row.iloc[5]),
-                        'visible_height': int(row.iloc[6]),
-                        'visible_x': int(row.iloc[7]),
-                        'visible_y': int(row.iloc[8])
-                    }
-                print(f"Sets chargés: {list(self.sets_data.keys())}")
+                    if pd.notna(row.iloc[0]):  # Vérifier que le set existe
+                        set_name = str(row.iloc[0]).lower().replace(' ', '')
+                        self.sets_data[set_name] = {
+                            'background': str(row.iloc[1]) if pd.notna(row.iloc[1]) else f"fond{set_name[-1]}.png",
+                            'foreground': str(row.iloc[2]) if pd.notna(row.iloc[2]) else f"pp{set_name[-1]}.png",
+                            'bg_width': int(float(row.iloc[3])) if pd.notna(row.iloc[3]) else 2000,
+                            'bg_height': int(float(row.iloc[4])) if pd.notna(row.iloc[4]) else 2000,
+                            'visible_width': int(float(row.iloc[5])) if pd.notna(row.iloc[5]) else 1280,
+                            'visible_height': int(float(row.iloc[6])) if pd.notna(row.iloc[6]) else 720,
+                            'visible_x': int(float(row.iloc[7])) if pd.notna(row.iloc[7]) else 0,
+                            'visible_y': int(float(row.iloc[8])) if pd.notna(row.iloc[8]) else 0
+                        }
+                print(f"Sets chargés avec succès: {list(self.sets_data.keys())}")
             else:
-                raise FileNotFoundError("Fichier Excel non trouvé")
+                print("Fichier Excel non trouvé, utilisation des données par défaut")
+                self.use_default_set_data()
                 
         except Exception as e:
             print(f"Erreur chargement Excel: {e}")
-            # Données par défaut basées sur votre fichier
-            self.sets_data = {
-                'set1': {'background': 'fond1.png', 'foreground': 'pp1.png', 
-                        'bg_width': 2000, 'bg_height': 1688, 
-                        'visible_width': 1061, 'visible_height': 597, 
-                        'visible_x': -80, 'visible_y': 959},
-                'set2': {'background': 'fond2.png', 'foreground': 'pp2.png',
-                        'bg_width': 2000, 'bg_height': 1414,
-                        'visible_width': 2286, 'visible_height': 1286, 
-                        'visible_x': -137, 'visible_y': 68},
-                'set3': {'background': 'fond3.png', 'foreground': 'pp3.png',
-                        'bg_width': 2000, 'bg_height': 2632,
-                        'visible_width': 1267, 'visible_height': 711, 
-                        'visible_x': 942, 'visible_y': 1713},
-                'set4': {'background': 'fond4.png', 'foreground': 'pp4.png',
-                        'bg_width': 2000, 'bg_height': 2633,
-                        'visible_width': 1890, 'visible_height': 1063, 
-                        'visible_x': 74, 'visible_y': 1253}
-            }
+            self.use_default_set_data()
+    
+    def use_default_set_data(self):
+        """Utilise les données par défaut si le fichier Excel n'est pas disponible"""
+        self.sets_data = {
+            'set1': {'background': 'fond1.png', 'foreground': 'pp1.png', 
+                    'bg_width': 2000, 'bg_height': 1688, 
+                    'visible_width': 1061, 'visible_height': 597, 
+                    'visible_x': -80, 'visible_y': 959},
+            'set2': {'background': 'fond2.png', 'foreground': 'pp2.png',
+                    'bg_width': 2000, 'bg_height': 1414,
+                    'visible_width': 2286, 'visible_height': 1286, 
+                    'visible_x': -137, 'visible_y': 68},
+            'set3': {'background': 'fond3.png', 'foreground': 'pp3.png',
+                    'bg_width': 2000, 'bg_height': 2632,
+                    'visible_width': 1267, 'visible_height': 711, 
+                    'visible_x': 942, 'visible_y': 1713},
+            'set4': {'background': 'fond4.png', 'foreground': 'pp4.png',
+                    'bg_width': 2000, 'bg_height': 2633,
+                    'visible_width': 1890, 'visible_height': 1063, 
+                    'visible_x': 74, 'visible_y': 1253}
+        }
     
     def scan_cameras(self):
         """Scanne les caméras disponibles"""
         self.cameras_list = []
         for i in range(10):
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                self.cameras_list.append(f"Caméra {i}")
-                cap.release()
+            try:
+                cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                if cap.isOpened():
+                    self.cameras_list.append(f"Caméra {i}")
+                    cap.release()
+            except:
+                pass
         
         if self.cameras_list:
             self.camera_combo['values'] = self.cameras_list
@@ -194,8 +207,6 @@ class ChromaKeyApp:
         style = ttk.Style()
         style.configure('Title.TLabel', font=('Arial', 16, 'bold'))
         style.configure('Heading.TLabel', font=('Arial', 12, 'bold'))
-        style.configure('Success.TLabel', foreground='green')
-        style.configure('Error.TLabel', foreground='red')
         
         # Frame principal
         main_frame = ttk.Frame(self.root)
@@ -245,7 +256,7 @@ class ChromaKeyApp:
         # Section Actions
         self.create_actions_section(controls_frame)
         
-        # Status bar
+        # Status bar (créée APRÈS les autres sections pour être disponible)
         self.status_bar = ttk.Label(self.root, text="Prêt", relief=tk.SUNKEN)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
     
@@ -503,7 +514,8 @@ class ChromaKeyApp:
                         f"({self.current_set_data['visible_x']}, {self.current_set_data['visible_y']})")
             self.zone_label.config(text=zone_info)
             
-            self.status_bar.config(text=f"Set {set_key} chargé")
+            if hasattr(self, 'status_bar'):
+                self.status_bar.config(text=f"Set {set_key} chargé")
         else:
             messagebox.showerror("Erreur", f"Set {set_key} non trouvé")
     
@@ -511,24 +523,28 @@ class ChromaKeyApp:
         """Démarre la caméra"""
         if not self.is_running:
             try:
-                camera_idx = int(self.camera_combo.get().split()[-1])
-                self.camera = cv2.VideoCapture(camera_idx, cv2.CAP_DSHOW)
-                
-                # Configurer pour Logitech C270 HD (1280x720)
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                self.camera.set(cv2.CAP_PROP_FPS, 30)
-                self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                
-                if self.camera.isOpened():
-                    self.is_running = True
-                    self.update_frame()
-                    self.start_btn.config(state=tk.DISABLED)
-                    self.stop_btn.config(state=tk.NORMAL)
-                    self.capture_btn.config(state=tk.NORMAL)
-                    self.status_bar.config(text="Caméra active - Logitech C270 HD")
+                camera_text = self.camera_combo.get()
+                if camera_text and camera_text != 'Aucune caméra':
+                    camera_idx = int(camera_text.split()[-1])
+                    self.camera = cv2.VideoCapture(camera_idx, cv2.CAP_DSHOW)
+                    
+                    # Configurer pour Logitech C270 HD (1280x720)
+                    self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                    self.camera.set(cv2.CAP_PROP_FPS, 30)
+                    self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    
+                    if self.camera.isOpened():
+                        self.is_running = True
+                        self.update_frame()
+                        self.start_btn.config(state=tk.DISABLED)
+                        self.stop_btn.config(state=tk.NORMAL)
+                        self.capture_btn.config(state=tk.NORMAL)
+                        self.status_bar.config(text="Caméra active - Logitech C270 HD")
+                    else:
+                        messagebox.showerror("Erreur", "Impossible d'ouvrir la caméra")
                 else:
-                    messagebox.showerror("Erreur", "Impossible d'ouvrir la caméra")
+                    messagebox.showerror("Erreur", "Aucune caméra sélectionnée")
             except Exception as e:
                 messagebox.showerror("Erreur", f"Erreur caméra: {e}")
     
@@ -610,7 +626,9 @@ class ChromaKeyApp:
             bg_x_end = bg_x_start + (x_end - x_start)
             bg_y_end = bg_y_start + (y_end - y_start)
             
-            if bg_x_end > 0 and bg_y_end > 0:
+            if bg_x_end > 0 and bg_y_end > 0 and bg_x_start < bg_resized.shape[1] and bg_y_start < bg_resized.shape[0]:
+                bg_x_end = min(bg_x_end, bg_resized.shape[1])
+                bg_y_end = min(bg_y_end, bg_resized.shape[0])
                 full_bg[y_start:y_end, x_start:x_end] = bg_resized[bg_y_start:bg_y_end, bg_x_start:bg_x_end]
             
             # Composition
