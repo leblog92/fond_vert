@@ -1,11 +1,22 @@
+Je souhaite créer une application python avec interface graphique pour PC pour prendre des photos de personnes sur fond vert (avec une haute précision du détourage) avec un décor de fond (fond*.png), un premier plan (pp*.png) qui sont prédéterminés selon des sets (set1,set2,set3,set4) (fichier excel joint), ainsi que la partie du décor utilisée par la caméra (zone utilisée par la caméra, dimensions et position dans le décor).
 
+L'interface graphique doit comporter :
+ - un menu pour choisir la caméra
+ - un bouton pour scanner les caméras disponibles
+ - un bouton pour démarrer la caméra
+ - un bouton pour arrêter la caméra
+ - un menu pour changer de set (set1 veut dire fond1.png avec pp1.png) set 1/set2/set3/set4
+ - des paramètres de détourage précis
+ - des réglages pour ajuster la position de la personne photographiée en x/y dans la zone visible
+ - un champ pour un nom d'une personne (utilisé pour le nom de fichier en plus des critères habituels)
+ - un champ pour remplir une adresse email (à insérer en métadonnées du fichier lors de la prise de vue)
+ - un bouton pour prendre la vue et l'enregistrer dans le dossier %userprofile%/pictures/salonBD
 
-je souhaite créer une application python avec interface graphique pour PC pour prendre des photos de personnes sur fond vert avec un décor (fond*.png), un premier plan ()
-champ nom (fichier)
-champ email (métadonnées) rentrée dans les métadonnées
-lors de la prise de vue, je souhaite que le fichier soit enregistré dans le dossier %userprofile%/pictures/salonBD, je souhaite que le nom du fichier  du fichier je souhaite que le nom soit incorpo
-environement :
- ordinateur portable avec windows 11
- python version 3.13.7
- caméra C270 HD Logitech 1280*720 connectée en USB
+Lors de la prise de vue, je souhaite que le fichier soit enregistré dans le dossier %userprofile%/pictures/salonBD avec dans le nom du fichier le nom de la personne et en metadonnée l'adresse email rentrée dans l'interface
+
+Précisions sur l'environement d'utilisation :
+ - ordinateur portable avec windows 11
+ - caractères français (France)
+ - python version 3.13.7
+ - caméra C270 HD Logitech 1280*720 connectée en USB en 16/9
  
