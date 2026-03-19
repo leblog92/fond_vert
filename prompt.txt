@@ -1,14 +1,20 @@
-Je souhaite créer une application python avec interface graphique pour PC pour prendre des photos de personnes sur fond vert (avec une haute précision du détourage) avec un décor de fond (fond*.png), un premier plan (pp*.png) qui sont prédéterminés selon des sets (set1,set2,set3,set4) (fichier excel joint), ainsi que la partie du décor utilisée par la caméra (zone utilisée par la caméra, dimensions et position dans le décor).
+Je souhaite créer une application python avec interface graphique pour PC pour créer des montages photo avec des photos de personnes sur fond vert (avec une haute précision du détourage) avec un décor de fond (fond*.png), un premier plan (pp*.png) qui sont prédéterminés selon des sets (set1,set2,set3,set4) de tailles différentes (grille ci-dessous), ainsi que la partie montage utilisée par la caméra (zone utilisée par la caméra, dimensions et position dans le décor). Le ratio de l'image est respecté mais est de taille différente par set.
+
+ 	fichier fond	fichier premier plan	largeur fond px	hauteur fond px	zone visible largeur px (prise de vue caméra)	zone visible hauteur px (prise de vue caméra)	position X zone visible (prise de vue caméra)	position Y zone visible (prise de vue caméra)
+set 1	fond1.png	pp1.png	2000	1688	1061	597	-80	959
+set 2	fond2.png	pp2.png	2000	1414	2286	1286	-137	68
+set 3	fond3.png	pp3.png	2000	2632	1267	711	942	1713
+set 4	fond4.png	pp4.png	2000	2633	1890	1063	74	1253
 
 L'interface graphique doit comporter :
  - un menu pour choisir la caméra
  - un bouton pour scanner les caméras disponibles
  - un bouton pour démarrer la caméra
  - un bouton pour arrêter la caméra
- - un menu pour changer de set (set1 veut dire fond1.png avec pp1.png) set 1/set2/set3/set4
+ - un menu pour changer de set (set1 veut dire fond1.png avec pp1.png) set 1/set2/set3/set4 et donc afficher le montage fond*.png taille selon le set + zone prise de vue (webcam) adapté selon le set + pp*.png taille selon le set
  - des paramètres de détourage précis
  - des réglages pour ajuster la position de la personne photographiée en x/y dans la zone visible
- - un champ pour un nom d'une personne (utilisé pour le nom de fichier en plus des critères habituels)
+ - un champ pour un nom d'une personne (utilisé pour le nom de fichier en plus des critères habituels salonBD+date+heure)
  - un champ pour remplir une adresse email (à insérer en métadonnées du fichier lors de la prise de vue)
  - un bouton pour prendre la vue et l'enregistrer dans le dossier %userprofile%/pictures/salonBD
 
@@ -18,5 +24,6 @@ Précisions sur l'environement d'utilisation :
  - ordinateur portable avec windows 11
  - caractères français (France)
  - python version 3.13.7
- - caméra C270 HD Logitech 1280*720 connectée en USB en 16/9
+ - caméra C270 HD Logitech 1280*720 connectée en USB ratio 16/9
+
  
