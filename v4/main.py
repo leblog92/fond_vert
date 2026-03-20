@@ -1,6 +1,7 @@
 # main.py
 import sys
 import os
+import logging
 from pathlib import Path
 from datetime import datetime
 
@@ -18,6 +19,10 @@ from config import Config
 from camera_manager import CameraThread, CameraScanner
 from image_processor import GreenScreenProcessor
 
+# Configuration du logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -31,7 +36,16 @@ class MainWindow(QMainWindow):
         self.current_frame = None
         self.person_position_x = 0
         self.person_position_y = 0
-        self.zone_info = None
+        
+        # Initialisation de zone_info avec les valeurs du set 1
+        set_config = Config.SETS[1]
+        self.zone_info = {
+            'largeur': set_config.zone_largeur,
+            'hauteur': set_config.zone_hauteur,
+            'x': set_config.zone_x,
+            'y': set_config.zone_y
+        }
+        
         self.preview_timer = QTimer()
         self.preview_timer.timeout.connect(self.update_montage_preview)
         
@@ -43,6 +57,18 @@ class MainWindow(QMainWindow):
         
         # Scanner initial des caméras
         self.scan_cameras()
+        
+    def update_set_info_display(self):
+        """Affiche les informations du set en cours"""
+        set_config = Config.SETS[self.current_set]
+        info_text = (f"📐 Set {self.current_set}\n"
+                     f"└─ Fond: {set_config.largeur_fond} x {set_config.hauteur_fond} px\n"
+                     f"└─ Zone visible: {set_config.zone_largeur} x {set_config.zone_hauteur} px\n"
+                     f"└─ Position zone: X={set_config.zone_x}, Y={set_config.zone_y}")
+        
+        # Mettre à jour le label si il existe
+        if hasattr(self, 'set_info_label'):
+            self.set_info_label.setText(info_text)
         
     def setup_ui(self):
         """Configuration de l'interface utilisateur"""
@@ -208,7 +234,7 @@ class MainWindow(QMainWindow):
         return chroma_group
     
     def create_set_group(self):
-        """Crée le groupe de sélection du set"""
+        """Crée le groupe de sélection du set avec informations"""
         set_group = QGroupBox("Configuration du set")
         set_layout = QVBoxLayout()
         
@@ -221,8 +247,14 @@ class MainWindow(QMainWindow):
         set_selector_layout.addWidget(self.set_combo)
         set_layout.addLayout(set_selector_layout)
         
-        # Aperçu du set (miniature)
-        self.set_preview = QLabel("Aperçu du set\n(Fond + Premier plan)")
+        # Informations sur le set
+        self.set_info_label = QLabel("")
+        self.set_info_label.setStyleSheet("background-color: #f0f0f0; padding: 5px; border-radius: 3px; font-family: monospace;")
+        self.set_info_label.setWordWrap(True)
+        set_layout.addWidget(self.set_info_label)
+        
+        # Aperçu du set
+        self.set_preview = QLabel("Aperçu du set")
         self.set_preview.setMinimumSize(300, 200)
         self.set_preview.setStyleSheet("border: 1px solid black; background-color: #2b2b2b;")
         self.set_preview.setAlignment(Qt.AlignCenter)
@@ -313,6 +345,8 @@ class MainWindow(QMainWindow):
             return
             
         camera_id = self.camera_combo.currentData()
+        logger.info(f"Démarrage de la caméra {camera_id}")
+        logger.info(f"zone_info actuel: {self.zone_info}")
         
         self.camera_thread = CameraThread()
         self.camera_thread.set_camera(camera_id)
@@ -347,21 +381,36 @@ class MainWindow(QMainWindow):
         """Mettre à jour l'affichage de la caméra avec détourage"""
         self.current_frame = frame.copy()
         
-        # Appliquer le détourage pour l'aperçu
-        person_rgba, mask = self.processor.extract_person(frame)
-        
-        # Afficher dans l'interface (version avec détourage)
-        rgb_image = cv2.cvtColor(person_rgba, cv2.COLOR_BGRA2RGB)
-        h, w, ch = rgb_image.shape
-        bytes_per_line = ch * w
-        qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
-            self.camera_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.camera_label.setPixmap(scaled_pixmap)
+        try:
+            # Appliquer le détourage pour l'aperçu
+            person_rgba, mask = self.processor.extract_person(frame)
+            
+            # Vérifier les dimensions et le type
+            if person_rgba is not None and person_rgba.size > 0:
+                # Afficher dans l'interface (version avec détourage)
+                if person_rgba.shape[2] == 4:
+                    rgb_image = cv2.cvtColor(person_rgba, cv2.COLOR_BGRA2RGB)
+                else:
+                    rgb_image = cv2.cvtColor(person_rgba, cv2.COLOR_BGR2RGB)
+                    
+                h, w, ch = rgb_image.shape
+                bytes_per_line = ch * w
+                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
+                    self.camera_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.camera_label.setPixmap(scaled_pixmap)
+        except Exception as e:
+            logger.error(f"Erreur update_image: {e}")
+            pass
         
     def update_montage_preview(self):
         """Met à jour l'aperçu du montage en direct"""
         if not self.preview_check.isChecked() or self.current_frame is None:
+            return
+            
+        # Vérifier que zone_info est initialisé
+        if self.zone_info is None:
+            logger.warning("zone_info n'est pas initialisé")
             return
             
         try:
@@ -372,6 +421,7 @@ class MainWindow(QMainWindow):
             pp_path = assets_path / set_config.pp_file
             
             if not fond_path.exists() or not pp_path.exists():
+                logger.warning(f"Fichiers manquants: {fond_path} ou {pp_path}")
                 return
                 
             # Créer l'aperçu
@@ -381,18 +431,17 @@ class MainWindow(QMainWindow):
                 self.zone_info, set_config
             )
             
-            if preview is not None:
-                # Convertir pour l'affichage
-                rgb_image = cv2.cvtColor(preview, cv2.COLOR_RGB2BGR)
-                h, w, ch = rgb_image.shape
+            if preview is not None and preview.size > 0:
+                # Convertir pour l'affichage (RGB déjà)
+                h, w, ch = preview.shape
                 bytes_per_line = ch * w
-                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                qt_image = QImage(preview.data, w, h, bytes_per_line, QImage.Format_RGB888)
                 scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
                     self.montage_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.montage_label.setPixmap(scaled_pixmap)
-                
+                    
         except Exception as e:
-            # Silencieux en mode aperçu
+            logger.error(f"Erreur update_montage_preview: {e}")
             pass
             
     def toggle_live_preview(self, state):
@@ -421,6 +470,9 @@ class MainWindow(QMainWindow):
             'y': set_config.zone_y
         }
         
+        # Mettre à jour l'affichage des dimensions
+        self.update_set_info_display()
+        
     def update_set_preview(self):
         """Met à jour l'aperçu du set (fond + premier plan)"""
         set_config = Config.SETS[self.current_set]
@@ -430,32 +482,36 @@ class MainWindow(QMainWindow):
         pp_path = assets_path / set_config.pp_file
         
         if fond_path.exists() and pp_path.exists():
-            # Charger les deux images
-            fond = cv2.imread(str(fond_path))
-            pp = cv2.imread(str(pp_path), cv2.IMREAD_UNCHANGED)
-            
-            # Redimensionner pour l'aperçu
-            height = 200
-            scale = height / fond.shape[0]
-            width = int(fond.shape[1] * scale)
-            
-            fond_small = cv2.resize(fond, (width, height))
-            
-            # Créer une composition simple pour l'aperçu
-            if pp.shape[2] == 4:
-                pp_small = cv2.resize(pp, (width, height))
-                # Composition rapide pour l'aperçu
-                alpha = pp_small[:, :, 3] / 255.0
-                for c in range(3):
-                    fond_small[:, :, c] = (alpha * pp_small[:, :, c] + 
-                                          (1 - alpha) * fond_small[:, :, c])
-            
-            # Convertir pour affichage
-            rgb_image = cv2.cvtColor(fond_small, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb_image.shape
-            bytes_per_line = ch * w
-            qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            self.set_preview.setPixmap(QPixmap.fromImage(qt_image))
+            try:
+                # Charger les deux images
+                fond = cv2.imread(str(fond_path))
+                pp = cv2.imread(str(pp_path), cv2.IMREAD_UNCHANGED)
+                
+                # Redimensionner pour l'aperçu
+                height = 200
+                scale = height / fond.shape[0]
+                width = int(fond.shape[1] * scale)
+                
+                fond_small = cv2.resize(fond, (width, height))
+                
+                # Créer une composition simple pour l'aperçu
+                if pp.shape[2] == 4:
+                    pp_small = cv2.resize(pp, (width, height))
+                    # Composition rapide pour l'aperçu
+                    alpha = pp_small[:, :, 3] / 255.0
+                    for c in range(3):
+                        fond_small[:, :, c] = (alpha * pp_small[:, :, c] + 
+                                              (1 - alpha) * fond_small[:, :, c])
+                
+                # Convertir pour affichage
+                rgb_image = cv2.cvtColor(fond_small, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb_image.shape
+                bytes_per_line = ch * w
+                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                self.set_preview.setPixmap(QPixmap.fromImage(qt_image))
+            except Exception as e:
+                logger.error(f"Erreur update_set_preview: {e}")
+                self.set_preview.setText(f"Erreur chargement:\n{str(e)}")
         else:
             self.set_preview.setText(f"Fichiers non trouvés:\n{set_config.fond_file}\n{set_config.pp_file}")
             
@@ -528,16 +584,18 @@ class MainWindow(QMainWindow):
                 self.zone_info, set_config
             )
             
+            # Vérifier les dimensions
+            h, w = final_image.shape[:2]
+            
             # Sauvegarde
             filepath = self.processor.save_with_metadata(
                 final_image, person_name, email, self.current_set
             )
             
-            # Afficher un aperçu de l'image sauvegardée
-            self.show_saved_preview(final_image)
-            
+            # Afficher un message avec les dimensions
             QMessageBox.information(self, "Succès", 
-                                   f"Photo sauvegardée:\n{filepath}")
+                                   f"Photo sauvegardée:\n{filepath}\n"
+                                   f"Dimensions: {w} x {h} pixels")
             
             # Option : ouvrir le dossier
             reply = QMessageBox.question(self, "Ouvrir le dossier", 
@@ -547,24 +605,8 @@ class MainWindow(QMainWindow):
                 os.startfile(Config.SAVE_DIR)
                 
         except Exception as e:
+            logger.error(f"Erreur take_photo: {e}")
             QMessageBox.critical(self, "Erreur", f"Erreur lors de la sauvegarde:\n{str(e)}")
-            
-    def show_saved_preview(self, image):
-        """Affiche un aperçu de l'image sauvegardée"""
-        # Redimensionner pour l'affichage
-        preview = cv2.resize(image, (640, 360), interpolation=cv2.INTER_AREA)
-        rgb_image = cv2.cvtColor(preview, cv2.COLOR_RGB2BGR)
-        h, w, ch = rgb_image.shape
-        bytes_per_line = ch * w
-        qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        
-        # Afficher dans une petite fenêtre temporaire
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Aperçu de la photo")
-        msg.setText("Photo sauvegardée avec succès!")
-        msg.setIconPixmap(QPixmap.fromImage(qt_image).scaled(320, 180, Qt.KeepAspectRatio))
-        msg.setStandardButtons(QMessageBox.Ok)
-        msg.exec_()
             
     def closeEvent(self, event):
         """Gérer la fermeture de l'application"""

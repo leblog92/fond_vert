@@ -3,6 +3,8 @@ def change_set(self, index):
     self.current_set = index + 1
     self.update_set_preview()
     set_config = Config.SETS[self.current_set]
+    
+    # Mettre à jour zone_info avec les valeurs du nouveau set
     self.zone_info = {
         'largeur': set_config.zone_largeur,
         'hauteur': set_config.zone_hauteur,
@@ -11,8 +13,6 @@ def change_set(self, index):
     }
     
     # Mettre à jour l'affichage des dimensions
-    info_text = (f"📐 Dimensions du set {self.current_set}:\n"
-                 f"└─ Fond: {set_config.largeur_fond} x {set_config.hauteur_fond} px\n"
-                 f"└─ Zone caméra: {set_config.zone_largeur} x {set_config.zone_hauteur} px\n"
-                 f"└─ Position zone: X={set_config.zone_x}, Y={set_config.zone_y}")
-    self.set_info_label.setText(info_text)
+    self.update_set_info_display()
+    
+    logger.info(f"Set changé pour {self.current_set}, zone_info: {self.zone_info}")
