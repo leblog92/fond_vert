@@ -36,6 +36,10 @@ class MainWindow(QMainWindow):
         self.current_frame = None
         self.person_position_x = 0
         self.person_position_y = 0
+
+        # Cache des images de fond et premier plan (point 4)
+        self._cached_fond = {}
+        self._cached_pp = {}
         
         # Initialisation de zone_info avec les valeurs du set 1
         set_config = Config.SETS[1]
@@ -66,7 +70,6 @@ class MainWindow(QMainWindow):
                      f"└─ Zone visible: {set_config.zone_largeur} x {set_config.zone_hauteur} px\n"
                      f"└─ Position zone: X={set_config.zone_x}, Y={set_config.zone_y}")
         
-        # Mettre à jour le label si il existe
         if hasattr(self, 'set_info_label'):
             self.set_info_label.setText(info_text)
         
@@ -81,18 +84,15 @@ class MainWindow(QMainWindow):
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         
-        # Zone de la caméra
         camera_group = self.create_camera_group()
         left_layout.addWidget(camera_group)
         
-        # Aperçu caméra (avec détourage)
         self.camera_label = QLabel("Aperçu caméra avec détourage")
         self.camera_label.setMinimumSize(640, 360)
         self.camera_label.setStyleSheet("border: 2px solid #444; background-color: #2b2b2b;")
         self.camera_label.setAlignment(Qt.AlignCenter)
         left_layout.addWidget(self.camera_label)
         
-        # Paramètres de détourage
         chroma_group = self.create_chroma_group()
         left_layout.addWidget(chroma_group)
         
@@ -100,7 +100,6 @@ class MainWindow(QMainWindow):
         center_panel = QWidget()
         center_layout = QVBoxLayout(center_panel)
         
-        # Aperçu du montage en direct
         preview_group = QGroupBox("Aperçu du montage en direct")
         preview_layout = QVBoxLayout()
         
@@ -110,7 +109,6 @@ class MainWindow(QMainWindow):
         self.montage_label.setAlignment(Qt.AlignCenter)
         preview_layout.addWidget(self.montage_label)
         
-        # Checkbox pour activer/désactiver l'aperçu en direct
         self.preview_check = QCheckBox("Aperçu en direct du montage")
         self.preview_check.setChecked(True)
         self.preview_check.stateChanged.connect(self.toggle_live_preview)
@@ -123,23 +121,18 @@ class MainWindow(QMainWindow):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         
-        # Sélection du set
         set_group = self.create_set_group()
         right_layout.addWidget(set_group)
         
-        # Ajustement position personne
         position_group = self.create_position_group()
         right_layout.addWidget(position_group)
         
-        # Informations personne
         info_group = self.create_info_group()
         right_layout.addWidget(info_group)
         
-        # Bouton de prise de vue
         self.create_capture_button()
         right_layout.addWidget(self.capture_button)
         
-        # Ajout des panneaux au layout principal
         main_layout.addWidget(left_panel, 2)
         main_layout.addWidget(center_panel, 3)
         main_layout.addWidget(right_panel, 2)
@@ -149,7 +142,6 @@ class MainWindow(QMainWindow):
         camera_group = QGroupBox("Caméra")
         camera_layout = QVBoxLayout()
         
-        # Sélection caméra
         cam_select_layout = QHBoxLayout()
         self.camera_combo = QComboBox()
         self.camera_combo.setMinimumWidth(200)
@@ -160,7 +152,6 @@ class MainWindow(QMainWindow):
         cam_select_layout.addWidget(self.scan_button)
         camera_layout.addLayout(cam_select_layout)
         
-        # Boutons contrôle caméra
         cam_control_layout = QHBoxLayout()
         self.start_button = QPushButton("Démarrer")
         self.start_button.clicked.connect(self.start_camera)
@@ -179,7 +170,6 @@ class MainWindow(QMainWindow):
         chroma_group = QGroupBox("Paramètres de détourage")
         chroma_layout = QGridLayout()
         
-        # Plages de couleurs
         chroma_layout.addWidget(QLabel("Teinte min:"), 0, 0)
         self.hue_min = QSpinBox()
         self.hue_min.setRange(0, 180)
@@ -208,7 +198,6 @@ class MainWindow(QMainWindow):
         self.val_min.valueChanged.connect(self.update_green_range)
         chroma_layout.addWidget(self.val_min, 1, 3)
         
-        # Paramètres morphologiques
         chroma_layout.addWidget(QLabel("Érosion:"), 2, 0)
         self.erode_slider = QSlider(Qt.Horizontal)
         self.erode_slider.setRange(0, 5)
@@ -247,13 +236,11 @@ class MainWindow(QMainWindow):
         set_selector_layout.addWidget(self.set_combo)
         set_layout.addLayout(set_selector_layout)
         
-        # Informations sur le set
         self.set_info_label = QLabel("")
         self.set_info_label.setStyleSheet("background-color: #f0f0f0; padding: 5px; border-radius: 3px; font-family: monospace;")
         self.set_info_label.setWordWrap(True)
         set_layout.addWidget(self.set_info_label)
         
-        # Aperçu du set
         self.set_preview = QLabel("Aperçu du set")
         self.set_preview.setMinimumSize(300, 200)
         self.set_preview.setStyleSheet("border: 1px solid black; background-color: #2b2b2b;")
@@ -358,8 +345,8 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(True)
         self.capture_button.setEnabled(True)
         
-        # Démarrer l'aperçu du montage
-        self.preview_timer.start(100)  # 10 fps
+        # Démarrer l'aperçu du montage à 5 fps
+        self.preview_timer.start(200)
         
     def stop_camera(self):
         """Arrêter la caméra"""
@@ -382,12 +369,9 @@ class MainWindow(QMainWindow):
         self.current_frame = frame.copy()
         
         try:
-            # Appliquer le détourage pour l'aperçu
             person_rgba, mask = self.processor.extract_person(frame)
             
-            # Vérifier les dimensions et le type
             if person_rgba is not None and person_rgba.size > 0:
-                # Afficher dans l'interface (version avec détourage)
                 if person_rgba.shape[2] == 4:
                     rgb_image = cv2.cvtColor(person_rgba, cv2.COLOR_BGRA2RGB)
                 else:
@@ -408,13 +392,11 @@ class MainWindow(QMainWindow):
         if not self.preview_check.isChecked() or self.current_frame is None:
             return
             
-        # Vérifier que zone_info est initialisé
         if self.zone_info is None:
             logger.warning("zone_info n'est pas initialisé")
             return
             
         try:
-            # Obtenir les chemins des fichiers
             assets_path = Path(__file__).parent / "assets"
             set_config = Config.SETS[self.current_set]
             fond_path = assets_path / set_config.fond_file
@@ -424,7 +406,6 @@ class MainWindow(QMainWindow):
                 logger.warning(f"Fichiers manquants: {fond_path} ou {pp_path}")
                 return
                 
-            # Créer l'aperçu
             preview = self.processor.create_preview(
                 self.current_frame, fond_path, pp_path,
                 self.person_position_x, self.person_position_y,
@@ -432,7 +413,6 @@ class MainWindow(QMainWindow):
             )
             
             if preview is not None and preview.size > 0:
-                # Convertir pour l'affichage (RGB déjà)
                 h, w, ch = preview.shape
                 bytes_per_line = ch * w
                 qt_image = QImage(preview.data, w, h, bytes_per_line, QImage.Format_RGB888)
@@ -447,7 +427,7 @@ class MainWindow(QMainWindow):
     def toggle_live_preview(self, state):
         """Active/désactive l'aperçu en direct"""
         if state == Qt.Checked and self.camera_thread is not None:
-            self.preview_timer.start(100)
+            self.preview_timer.start(200)
         else:
             self.preview_timer.stop()
             self.montage_label.clear()
@@ -469,51 +449,52 @@ class MainWindow(QMainWindow):
             'x': set_config.zone_x,
             'y': set_config.zone_y
         }
-        
-        # Mettre à jour l'affichage des dimensions
         self.update_set_info_display()
-        
+        logger.info(f"Set changé pour {self.current_set}, zone_info: {self.zone_info}")
+
     def update_set_preview(self):
-        """Met à jour l'aperçu du set (fond + premier plan)"""
+        """Met à jour l'aperçu du set (fond + premier plan) avec cache"""
         set_config = Config.SETS[self.current_set]
         assets_path = Path(__file__).parent / "assets"
-        
         fond_path = assets_path / set_config.fond_file
         pp_path = assets_path / set_config.pp_file
-        
-        if fond_path.exists() and pp_path.exists():
-            try:
-                # Charger les deux images
+
+        if not fond_path.exists() or not pp_path.exists():
+            self.set_preview.setText(f"Fichiers non trouvés:\n{set_config.fond_file}\n{set_config.pp_file}")
+            return
+
+        try:
+            # Charger et mettre en cache si pas encore fait
+            if self.current_set not in self._cached_fond:
                 fond = cv2.imread(str(fond_path))
                 pp = cv2.imread(str(pp_path), cv2.IMREAD_UNCHANGED)
-                
-                # Redimensionner pour l'aperçu
+
                 height = 200
                 scale = height / fond.shape[0]
                 width = int(fond.shape[1] * scale)
-                
-                fond_small = cv2.resize(fond, (width, height))
-                
-                # Créer une composition simple pour l'aperçu
-                if pp.shape[2] == 4:
-                    pp_small = cv2.resize(pp, (width, height))
-                    # Composition rapide pour l'aperçu
-                    alpha = pp_small[:, :, 3] / 255.0
-                    for c in range(3):
-                        fond_small[:, :, c] = (alpha * pp_small[:, :, c] + 
-                                              (1 - alpha) * fond_small[:, :, c])
-                
-                # Convertir pour affichage
-                rgb_image = cv2.cvtColor(fond_small, cv2.COLOR_BGR2RGB)
-                h, w, ch = rgb_image.shape
-                bytes_per_line = ch * w
-                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-                self.set_preview.setPixmap(QPixmap.fromImage(qt_image))
-            except Exception as e:
-                logger.error(f"Erreur update_set_preview: {e}")
-                self.set_preview.setText(f"Erreur chargement:\n{str(e)}")
-        else:
-            self.set_preview.setText(f"Fichiers non trouvés:\n{set_config.fond_file}\n{set_config.pp_file}")
+
+                self._cached_fond[self.current_set] = cv2.resize(fond, (width, height))
+                self._cached_pp[self.current_set] = cv2.resize(pp, (width, height))
+
+            # Utiliser les images en cache
+            fond_small = self._cached_fond[self.current_set].copy()
+            pp_small = self._cached_pp[self.current_set]
+
+            # Composition rapide pour l'aperçu
+            if pp_small.shape[2] == 4:
+                alpha = pp_small[:, :, 3] / 255.0
+                for c in range(3):
+                    fond_small[:, :, c] = (alpha * pp_small[:, :, c] +
+                                           (1 - alpha) * fond_small[:, :, c])
+
+            rgb_image = cv2.cvtColor(fond_small, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_image.shape
+            qt_image = QImage(rgb_image.data, w, h, ch * w, QImage.Format_RGB888)
+            self.set_preview.setPixmap(QPixmap.fromImage(qt_image))
+
+        except Exception as e:
+            logger.error(f"Erreur update_set_preview: {e}")
+            self.set_preview.setText(f"Erreur chargement:\n{str(e)}")
             
     def update_green_range(self):
         """Met à jour la plage de détection du vert"""
@@ -545,7 +526,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Erreur", "Aucune image disponible")
             return
             
-        # Vérifier les informations
         person_name = self.name_input.text().strip()
         email = self.email_input.text().strip()
         
@@ -556,9 +536,13 @@ class MainWindow(QMainWindow):
         if not email:
             QMessageBox.warning(self, "Erreur", "Veuillez entrer une adresse email")
             return
-            
+
+        # Bloquer l'interface pendant le traitement (point 5)
+        self.capture_button.setEnabled(False)
+        self.capture_button.setText("⏳ Traitement en cours...")
+        QApplication.processEvents()
+
         try:
-            # Obtenir les chemins des fichiers
             assets_path = Path(__file__).parent / "assets"
             set_config = Config.SETS[self.current_set]
             fond_path = assets_path / set_config.fond_file
@@ -574,30 +558,25 @@ class MainWindow(QMainWindow):
                                    f"Fichier de premier plan non trouvé: {pp_path}")
                 return
             
-            # Extraire la personne
             person_rgba, _ = self.processor.extract_person(self.current_frame)
             
-            # Composer l'image finale
             final_image = self.processor.composite_image(
                 person_rgba, fond_path, pp_path,
                 self.person_position_x, self.person_position_y,
                 self.zone_info, set_config
             )
             
-            # Vérifier les dimensions
             h, w = final_image.shape[:2]
+            logger.info(f"Image finale créée: {w}x{h} px")
             
-            # Sauvegarde
             filepath = self.processor.save_with_metadata(
                 final_image, person_name, email, self.current_set
             )
             
-            # Afficher un message avec les dimensions
             QMessageBox.information(self, "Succès", 
                                    f"Photo sauvegardée:\n{filepath}\n"
                                    f"Dimensions: {w} x {h} pixels")
             
-            # Option : ouvrir le dossier
             reply = QMessageBox.question(self, "Ouvrir le dossier", 
                                         "Voulez-vous ouvrir le dossier de sauvegarde?",
                                         QMessageBox.Yes | QMessageBox.No)
@@ -607,6 +586,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Erreur take_photo: {e}")
             QMessageBox.critical(self, "Erreur", f"Erreur lors de la sauvegarde:\n{str(e)}")
+
+        finally:
+            # Réactiver le bouton dans tous les cas (point 5)
+            self.capture_button.setEnabled(True)
+            self.capture_button.setText("PRENDRE LA VUE")
             
     def closeEvent(self, event):
         """Gérer la fermeture de l'application"""
@@ -617,7 +601,6 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     
-    # Configuration de la police pour les caractères français
     font = QFont("Arial", 9)
     app.setFont(font)
     
