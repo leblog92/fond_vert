@@ -9,10 +9,10 @@ Application Python de montage photo en temps réel pour fond vert, développée 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Caméra + détourage  │    Aperçu montage en direct    │  Sets   │
-│  ──────────────────  │  ─────────────────────────────  │  X/Y/Z  │
-│  Paramètres chroma   │                                 │  Nom    │
-│                      │                                 │  Email  │
-│                      │                                 │  📷     │
+│  ──────────────────  │  ───────────────────────────── │  X/Y/Z  │
+│  Paramètres chroma   │                                │  Nom    │
+│                      │                                │  Email  │
+│                      │                                │         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
