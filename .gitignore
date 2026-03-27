@@ -1,4 +1,30 @@
-__pycache__/config.cpython-313.pyc
-__pycache__/image_processor.cpython-313.pyc
-__pycache__/camera_manager.cpython-313.pyc
-/__pycache__
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Environnements virtuels
+venv/
+.venv/
+env/
+
+# Logs
+*.log
+
+# Fichiers système Windows
+Thumbs.db
+desktop.ini
+
+# Fichiers système macOS
+.DS_Store
+
+# Éditeurs
+.vscode/
+.idea/
+*.swp
