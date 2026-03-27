@@ -86,7 +86,7 @@ class GreenScreenProcessor:
         ).astype(np.uint8)
 
     def _composite(self, person_bgra, background_bgr, foreground_bgra,
-                   position_x, position_y,
+                   position_x, position_y, scale_z,
                    zone_largeur, zone_hauteur, zone_x, zone_y):
         """
         Composition générique fond + personne + premier plan.
@@ -104,7 +104,7 @@ class GreenScreenProcessor:
         if person_bgra is not None and person_bgra.size > 0:
             ph, pw = person_bgra.shape[:2]
             if pw > 0 and ph > 0:
-                scale = min(zone_largeur / pw, zone_hauteur / ph)
+                scale = min(zone_largeur / pw, zone_hauteur / ph) * scale_z
                 nw = max(1, int(pw * scale))
                 nh = max(1, int(ph * scale))
 
@@ -136,7 +136,7 @@ class GreenScreenProcessor:
         return canvas  # BGRA natif OpenCV
 
     def composite_image(self, person_bgra, background_path, foreground_path,
-                        position_x, position_y, zone_info, set_config):
+                        position_x, position_y, scale_z, zone_info, set_config):
         """Composition finale pleine résolution (montage sauvegardé)."""
         if zone_info is None:
             raise ValueError("zone_info ne peut pas être None")
@@ -149,16 +149,17 @@ class GreenScreenProcessor:
 
         return self._composite(
             person_bgra, background_bgr, foreground_bgra,
-            position_x, position_y,
+            position_x, position_y, scale_z,
             zone_info['largeur'], zone_info['hauteur'],
             zone_info['x'], zone_info['y']
         )
 
     def create_preview(self, frame, ui_background_bgr, ui_foreground_bgra,
-                       position_x, position_y, set_config):
+                       position_x, position_y, scale_z, set_config):
         """
         Aperçu en direct avec les fichiers UI (600px) déjà en cache.
         position_x/y sont mis à l'échelle UI avant composition.
+        scale_z est appliqué directement (indépendant de l'échelle UI).
         """
         try:
             if ui_background_bgr is None or ui_foreground_bgra is None:
@@ -173,7 +174,7 @@ class GreenScreenProcessor:
 
             result_bgra = self._composite(
                 person_bgra, ui_background_bgr, ui_foreground_bgra,
-                ui_pos_x, ui_pos_y,
+                ui_pos_x, ui_pos_y, scale_z,
                 set_config.ui_zone_largeur, set_config.ui_zone_hauteur,
                 set_config.ui_zone_x, set_config.ui_zone_y
             )
