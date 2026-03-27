@@ -37,8 +37,6 @@ class CameraThread(QThread):
         while self.running:
             ret, frame = self.cap.read()
             if ret:
-                # Rotation de l'image (miroir)
-                frame = cv2.flip(frame, 1)
                 self.change_pixmap_signal.emit(frame)
             else:
                 self.camera_error.emit("Erreur de lecture de la caméra")

@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QComboBox, QLabel,
                              QGroupBox, QSlider, QSpinBox, QLineEdit,
                              QFileDialog, QMessageBox, QGridLayout, QTabWidget,
-                             QCheckBox)
+                             QCheckBox, QProgressBar)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QFont, QPainter, QPen, QColor
 import cv2
@@ -35,9 +35,9 @@ class MainWindow(QMainWindow):
         self.current_frame = None
         self.person_position_x = 0
         self.person_position_y = 0
+        self._camera_ready = False  # True dès la première frame reçue
 
         # Cache UI : clé = set_id, valeur = (background_bgr, foreground_bgra)
-        # Chargé une seule fois par set depuis UI_fond*.jpg / UI_pp*.png
         self._ui_cache = {}
 
         # Coordonnées pleine résolution pour le montage final
@@ -52,17 +52,24 @@ class MainWindow(QMainWindow):
         self.preview_timer = QTimer()
         self.preview_timer.timeout.connect(self.update_montage_preview)
 
+        # Timer pour animer la barre de progression au démarrage caméra
+        self._progress_timer = QTimer()
+        self._progress_timer.timeout.connect(self._tick_progress)
+        self._progress_value = 0
+
         Config.ensure_save_dir()
         self.setup_ui()
         self.scan_cameras()
+        # Afficher l'aperçu du set 1 dès le démarrage
+        self.update_set_preview()
+        self.update_set_info_display()
 
     # ------------------------------------------------------------------
     # Cache UI
     # ------------------------------------------------------------------
 
     def _get_ui_assets(self, set_id):
-        """Retourne (background_bgr, foreground_bgra) depuis le cache UI.
-        Charge les fichiers UI_fond*.jpg / UI_pp*.png si besoin."""
+        """Retourne (background_bgr, foreground_bgra) depuis le cache UI."""
         if set_id not in self._ui_cache:
             assets_path = Path(__file__).parent / "assets"
             cfg = Config.SETS[set_id]
@@ -80,7 +87,6 @@ class MainWindow(QMainWindow):
                 logger.error(f"Lecture impossible fichiers UI set {set_id}")
                 return None, None
 
-            # Normaliser pp en BGRA natif OpenCV
             if pp.shape[2] == 3:
                 pp_bgra = cv2.cvtColor(pp, cv2.COLOR_BGR2BGRA)
             else:
@@ -149,6 +155,21 @@ class MainWindow(QMainWindow):
         self.create_capture_button()
         right_layout.addWidget(self.capture_button)
 
+        # Bouton ouvrir le dossier
+        self.open_folder_button = QPushButton("📂 Ouvrir le dossier de sauvegarde")
+        self.open_folder_button.clicked.connect(lambda: os.startfile(Config.SAVE_DIR))
+        self.open_folder_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                font-size: 12px;
+                padding: 8px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #1976D2; }
+        """)
+        right_layout.addWidget(self.open_folder_button)
+
         main_layout.addWidget(left_panel, 2)
         main_layout.addWidget(center_panel, 3)
         main_layout.addWidget(right_panel, 2)
@@ -176,6 +197,15 @@ class MainWindow(QMainWindow):
         cam_control_layout.addWidget(self.start_button)
         cam_control_layout.addWidget(self.stop_button)
         camera_layout.addLayout(cam_control_layout)
+
+        # Barre de progression pour l'initialisation de la caméra
+        self.camera_progress = QProgressBar()
+        self.camera_progress.setRange(0, 100)
+        self.camera_progress.setValue(0)
+        self.camera_progress.setTextVisible(True)
+        self.camera_progress.setFormat("En attente de la caméra...")
+        self.camera_progress.setVisible(False)
+        camera_layout.addWidget(self.camera_progress)
 
         camera_group.setLayout(camera_layout)
         return camera_group
@@ -326,11 +356,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def scan_cameras(self):
+        """Scanner les caméras — sans afficher la résolution entre parenthèses"""
         self.camera_combo.clear()
         cameras = CameraScanner.scan_cameras()
         if cameras:
-            for cam in cameras:
-                self.camera_combo.addItem(cam['name'], cam['id'])
+            for i, cam in enumerate(cameras):
+                self.camera_combo.addItem(f"Caméra {i}", cam['id'])
         else:
             self.camera_combo.addItem("Aucune caméra trouvée")
 
@@ -340,6 +371,15 @@ class MainWindow(QMainWindow):
             return
 
         camera_id = self.camera_combo.currentData()
+        self._camera_ready = False
+        self._progress_value = 0
+
+        # Afficher et animer la barre de progression
+        self.camera_progress.setValue(0)
+        self.camera_progress.setFormat("Initialisation de la caméra...")
+        self.camera_progress.setVisible(True)
+        self._progress_timer.start(80)  # tick toutes les 80ms
+
         self.camera_thread = CameraThread()
         self.camera_thread.set_camera(camera_id)
         self.camera_thread.change_pixmap_signal.connect(self.update_image)
@@ -351,11 +391,29 @@ class MainWindow(QMainWindow):
         self.capture_button.setEnabled(True)
         self.preview_timer.start(200)  # 5 fps
 
+    def _tick_progress(self):
+        """Avance la barre de progression jusqu'à 90% en attendant la première frame"""
+        if self._camera_ready:
+            # Caméra prête : compléter rapidement à 100% puis masquer
+            self.camera_progress.setValue(100)
+            self.camera_progress.setFormat("Caméra prête ✓")
+            self._progress_timer.stop()
+            QTimer.singleShot(800, lambda: self.camera_progress.setVisible(False))
+        else:
+            # Progression simulée jusqu'à 90% max
+            if self._progress_value < 90:
+                self._progress_value += 3
+                self.camera_progress.setValue(self._progress_value)
+
     def stop_camera(self):
+        self._progress_timer.stop()
+        self.camera_progress.setVisible(False)
         self.preview_timer.stop()
         if self.camera_thread:
             self.camera_thread.stop()
             self.camera_thread = None
+        self._camera_ready = False
+        self.current_frame = None
         self.camera_label.clear()
         self.camera_label.setText("Aperçu caméra")
         self.montage_label.clear()
@@ -365,8 +423,16 @@ class MainWindow(QMainWindow):
         self.capture_button.setEnabled(False)
 
     def update_image(self, frame):
-        """Affichage caméra gauche avec détourage — couleurs correctes BGR→RGB"""
+        """Affichage caméra gauche avec détourage.
+        Le flip horizontal est supprimé ici — camera_manager.py fait déjà cv2.flip(frame,1).
+        Si l'image apparaît inversée, retirer le flip dans camera_manager.py."""
         self.current_frame = frame.copy()
+
+        # Dès la première frame : marquer la caméra comme prête et afficher l'aperçu du set
+        if not self._camera_ready:
+            self._camera_ready = True
+            self.update_set_preview()  # afficher le set en même temps que la caméra
+
         try:
             person_bgra, _ = self.processor.extract_person(frame)
             if person_bgra is not None and person_bgra.size > 0:
@@ -416,6 +482,8 @@ class MainWindow(QMainWindow):
             self.montage_label.setText("Aperçu du montage")
 
     def handle_camera_error(self, error_msg):
+        self._progress_timer.stop()
+        self.camera_progress.setVisible(False)
         QMessageBox.critical(self, "Erreur caméra", error_msg)
         self.stop_camera()
 
@@ -516,7 +584,7 @@ class MainWindow(QMainWindow):
         try:
             assets_path = Path(__file__).parent / "assets"
             set_config = Config.SETS[self.current_set]
-            fond_path = assets_path / set_config.fond_file   # pleine résolution
+            fond_path = assets_path / set_config.fond_file
             pp_path   = assets_path / set_config.pp_file
 
             if not fond_path.exists():
@@ -541,15 +609,10 @@ class MainWindow(QMainWindow):
                 final_image, person_name, email, self.current_set
             )
 
+            # Simple confirmation sans proposition d'ouvrir le dossier
             QMessageBox.information(self, "Succès",
-                                    f"Photo sauvegardée:\n{filepath}\n"
-                                    f"Dimensions: {w} x {h} pixels")
-
-            reply = QMessageBox.question(self, "Ouvrir le dossier",
-                                         "Voulez-vous ouvrir le dossier de sauvegarde?",
-                                         QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                os.startfile(Config.SAVE_DIR)
+                                    f"Photo sauvegardée :\n{filepath}\n"
+                                    f"Dimensions : {w} x {h} pixels")
 
         except Exception as e:
             logger.error(f"Erreur take_photo: {e}")
