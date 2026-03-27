@@ -1,5 +1,0 @@
-jauge progression
-set0
-set2 pb
-changer qualité ? 5
-jpg 85
