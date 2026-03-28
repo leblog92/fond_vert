@@ -10,6 +10,7 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+
 class GreenScreenProcessor:
     """Traitement d'image pour fond vert"""
 
@@ -30,54 +31,87 @@ class GreenScreenProcessor:
         self.smoothness = smooth
 
     def extract_person(self, frame):
-        """Extrait la personne du fond vert — retourne BGRA (ordre natif OpenCV)"""
+        """
+        Extrait la personne du fond vert.
+        Retourne (person_bgra, mask) en ordre natif OpenCV.
+
+        Améliorations par rapport à la version précédente :
+        - Flou gaussien sur le masque → bords doux, moins de crénelage
+        - Suppression du spillage vert → corrige les reflets verts sur la peau
+          et les vêtements clairs aux bords de la silhouette
+        """
+        # 1. Masque HSV
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, self.lower_green, self.upper_green)
-        mask = cv2.bitwise_not(mask)
+        mask_raw = cv2.inRange(hsv, self.lower_green, self.upper_green)
+        mask_raw = cv2.bitwise_not(mask_raw)
+
+        # 2. Opérations morphologiques
         kernel = np.ones((self.smoothness, self.smoothness), np.uint8)
-        mask = cv2.erode(mask, kernel, iterations=self.erode_iterations)
+        mask = cv2.erode(mask_raw, kernel, iterations=self.erode_iterations)
         mask = cv2.dilate(mask, kernel, iterations=self.dilate_iterations)
-        result = cv2.bitwise_and(frame, frame, mask=mask)
-        b, g, r = cv2.split(result)
-        result_bgra = cv2.merge([b, g, r, mask])  # ordre BGR natif OpenCV
-        return result_bgra, mask
+
+        # 3. Lissage gaussien du masque → bords doux, élimine les pixels
+        #    verts résiduels aux contours (source principale du teint bizarre)
+        mask_blur = cv2.GaussianBlur(mask, (7, 7), 0)
+
+        # 4. Suppression du spillage vert (green spill removal)
+        #    Les pixels proches du bord du masque gardent une teinte verte
+        #    résiduelle du fond. On la corrige en réduisant le canal vert
+        #    là où il domine anormalement par rapport à R et B.
+        frame_corr = frame.copy().astype(np.float32)
+        b = frame_corr[:, :, 0]
+        g = frame_corr[:, :, 1]
+        r = frame_corr[:, :, 2]
+
+        # Détecte les pixels où le vert est le canal dominant (spillage)
+        green_spill = (g > r) & (g > b)
+        # Remplace le canal vert par la moyenne de R et B (correction naturelle)
+        g_corrected = (r + b) / 2.0
+        frame_corr[:, :, 1] = np.where(green_spill, g_corrected, g)
+        frame_bgr = np.clip(frame_corr, 0, 255).astype(np.uint8)
+
+        # 5. Application du masque sur l'image corrigée
+        result = cv2.bitwise_and(frame_bgr, frame_bgr, mask=mask)
+
+        # 6. Composition BGRA avec masque lissé comme canal alpha
+        b_ch, g_ch, r_ch = cv2.split(result)
+        result_bgra = cv2.merge([b_ch, g_ch, r_ch, mask_blur])
+
+        return result_bgra, mask_blur
 
     def load_foreground(self, foreground_path):
-        """Charge le premier plan en BGRA (ordre natif OpenCV)"""
+        """Charge le premier plan en BGRA natif OpenCV."""
         pp_img = cv2.imread(str(foreground_path), cv2.IMREAD_UNCHANGED)
         if pp_img is None:
             raise FileNotFoundError(f"Impossible de charger {foreground_path}")
         if pp_img.shape[2] == 3:
             pp_bgra = cv2.cvtColor(pp_img, cv2.COLOR_BGR2BGRA)
         else:
-            pp_bgra = pp_img.copy()   # déjà BGRA — pas de conversion
+            pp_bgra = pp_img.copy()
         return pp_bgra
 
     def _blend_onto(self, canvas, layer, alpha, px, py, nw, nh):
         """
-        Compose 'layer' sur 'canvas' à la position (px, py).
-        Gère le clipping : si layer dépasse canvas, seule la partie visible est composée.
-        canvas et layer sont en ordre BGR/BGRA natif OpenCV.
-        alpha : tableau 2D float32 de forme (nh, nw).
+        Compose 'layer' sur 'canvas' à la position (px, py) avec clipping.
+        canvas et layer sont en BGR/BGRA natif OpenCV.
+        alpha : tableau 2D float32 (nh, nw).
         """
         h_c, w_c = canvas.shape[:2]
 
-        # Calcul de la zone visible dans le canvas
         x0_c = max(px, 0)
         y0_c = max(py, 0)
         x1_c = min(px + nw, w_c)
         y1_c = min(py + nh, h_c)
 
         if x0_c >= x1_c or y0_c >= y1_c:
-            return  # complètement hors canvas
+            return
 
-        # Zone correspondante dans layer / alpha
         x0_l = x0_c - px
         y0_l = y0_c - py
         x1_l = x0_l + (x1_c - x0_c)
         y1_l = y0_l + (y1_c - y0_c)
 
-        a = alpha[y0_l:y1_l, x0_l:x1_l, np.newaxis]  # (h, w, 1)
+        a   = alpha[y0_l:y1_l, x0_l:x1_l, np.newaxis]
         src = layer[y0_l:y1_l, x0_l:x1_l, :3].astype(np.float32)
         dst = canvas[y0_c:y1_c, x0_c:x1_c, :3].astype(np.float32)
 
@@ -89,16 +123,14 @@ class GreenScreenProcessor:
                    position_x, position_y, scale_z,
                    zone_largeur, zone_hauteur, zone_x, zone_y):
         """
-        Composition générique fond + personne + premier plan.
-        Tout reste en BGR/BGRA natif OpenCV — pas de conversion de canaux.
-        Retourne un tableau BGRA.
+        Composition fond + personne + premier plan en BGR/BGRA natif OpenCV.
+        Retourne BGRA.
         """
         h_fond, w_fond = background_bgr.shape[:2]
 
-        # Canvas BGRA initialisé avec le fond
         canvas = np.zeros((h_fond, w_fond, 4), dtype=np.uint8)
         canvas[:, :, :3] = background_bgr
-        canvas[:, :, 3] = 255
+        canvas[:, :, 3]  = 255
 
         # --- Personne ---
         if person_bgra is not None and person_bgra.size > 0:
@@ -127,11 +159,11 @@ class GreenScreenProcessor:
                                              interpolation=cv2.INTER_LANCZOS4)
             if foreground_bgra.shape[2] == 4:
                 alpha_f = foreground_bgra[:, :, 3].astype(np.float32) / 255.0
-                a = alpha_f[:, :, np.newaxis]
+                a   = alpha_f[:, :, np.newaxis]
                 src = foreground_bgra[:, :, :3].astype(np.float32)
                 dst = canvas[:, :, :3].astype(np.float32)
                 canvas[:, :, :3] = np.clip(a * src + (1 - a) * dst, 0, 255).astype(np.uint8)
-                canvas[:, :, 3] = np.maximum(canvas[:, :, 3], foreground_bgra[:, :, 3])
+                canvas[:, :, 3]  = np.maximum(canvas[:, :, 3], foreground_bgra[:, :, 3])
 
         return canvas  # BGRA natif OpenCV
 
@@ -157,9 +189,8 @@ class GreenScreenProcessor:
     def create_preview(self, frame, ui_background_bgr, ui_foreground_bgra,
                        position_x, position_y, scale_z, set_config):
         """
-        Aperçu en direct avec les fichiers UI (600px) déjà en cache.
+        Aperçu en direct avec les fichiers UI (600px) en cache.
         position_x/y sont mis à l'échelle UI avant composition.
-        scale_z est appliqué directement (indépendant de l'échelle UI).
         """
         try:
             if ui_background_bgr is None or ui_foreground_bgra is None:
@@ -190,10 +221,10 @@ class GreenScreenProcessor:
 
     def save_with_metadata(self, image, person_name, email, set_id):
         """Sauvegarde en JPEG avec métadonnées EXIF."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
         clean_name = "".join(c for c in person_name if c.isalnum() or c in " -_").strip()
-        filename = f"salonBD_{clean_name}_{timestamp}_set{set_id}.jpg"
-        filepath = Config.SAVE_DIR / filename
+        filename   = f"salonBD_{clean_name}_{timestamp}_set{set_id}.jpg"
+        filepath   = Config.SAVE_DIR / filename
 
         # BGRA → RGB pour PIL/JPEG
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
