@@ -8,91 +8,402 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QComboBox, QLabel,
                              QGroupBox, QSlider, QSpinBox, QLineEdit,
-                             QFileDialog, QMessageBox, QGridLayout, QTabWidget,
-                             QCheckBox)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap, QFont, QPainter, QPen, QColor
+                             QMessageBox, QGridLayout, QCheckBox, QProgressBar,
+                             QStackedWidget, QSizePolicy, QFrame)
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QImage, QPixmap, QFont, QKeySequence
 import cv2
 import numpy as np
 
 from config import Config
 from camera_manager import CameraThread, CameraScanner
 from image_processor import GreenScreenProcessor
+import settings as Settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Fenêtre mode opérateur (plein écran simplifié)
+# ---------------------------------------------------------------------------
+
+class OperatorWindow(QWidget):
+    """
+    Vue simplifiée plein écran pour l'opérateur non technique.
+    Affiche uniquement : aperçu du montage, sélection du set,
+    champs nom/email et bouton de prise de vue.
+    Appuyer sur Échap ou F11 pour revenir au mode technicien.
+    """
+
+    def __init__(self, main_window):
+        super().__init__()
+        self.mw = main_window   # référence à MainWindow pour partager l'état
+        self.setWindowTitle("Studio Photo — Mode Opérateur")
+        self.setStyleSheet("background-color: #1a1a2e;")
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QHBoxLayout(self)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(20)
+
+        # ── Colonne gauche : aperçu montage ──────────────────────────────
+        left = QVBoxLayout()
+
+        title = QLabel("🎨 Studio Photo Salon BD")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #e0e0e0; font-size: 22px; font-weight: bold;"
+                            "padding: 8px; letter-spacing: 1px;")
+        left.addWidget(title)
+
+        self.montage_label = QLabel("Aperçu du montage")
+        self.montage_label.setAlignment(Qt.AlignCenter)
+        self.montage_label.setStyleSheet(
+            "border: 3px solid #4CAF50; background-color: #0d0d1a;"
+            "border-radius: 6px; color: #555; font-size: 16px;")
+        self.montage_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        left.addWidget(self.montage_label, stretch=1)
+
+        # Indicateur de statut caméra
+        self.status_label = QLabel("⏳ En attente de la caméra...")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("color: #888; font-size: 13px; padding: 4px;")
+        left.addWidget(self.status_label)
+
+        root.addLayout(left, stretch=3)
+
+        # ── Colonne droite : contrôles opérateur ─────────────────────────
+        right = QVBoxLayout()
+        right.setSpacing(16)
+
+        # Sélection du set
+        set_group = self._card("🖼  Décor")
+        set_inner = QVBoxLayout(set_group)
+        self.set_combo = QComboBox()
+        self.set_combo.setStyleSheet(self._combo_style())
+        for i in range(1, 5):
+            self.set_combo.addItem(f"  Set {i}")
+        # Synchroniser avec MainWindow sans déclencher change_set au démarrage
+        self.set_combo.blockSignals(True)
+        self.set_combo.setCurrentIndex(self.mw.current_set - 1)
+        self.set_combo.blockSignals(False)
+        self.set_combo.currentIndexChanged.connect(self._on_set_changed)
+        set_inner.addWidget(self.set_combo)
+        right.addWidget(set_group)
+
+        # Nom
+        name_group = self._card("👤  Nom de la personne")
+        name_inner = QVBoxLayout(name_group)
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Ex : Jean Dupont")
+        self.name_input.setStyleSheet(self._input_style())
+        # Synchroniser avec MainWindow
+        self.name_input.setText(self.mw.name_input.text())
+        name_inner.addWidget(self.name_input)
+        right.addWidget(name_group)
+
+        # Email
+        email_group = self._card("📧  Adresse email")
+        email_inner = QVBoxLayout(email_group)
+        self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText("exemple@email.com")
+        self.email_input.setStyleSheet(self._input_style())
+        self.email_input.setText(self.mw.email_input.text())
+        email_inner.addWidget(self.email_input)
+        right.addWidget(email_group)
+
+        right.addStretch()
+
+        # Bouton prise de vue
+        self.capture_btn = QPushButton("📷  PRENDRE LA VUE")
+        self.capture_btn.setEnabled(self.mw.capture_button.isEnabled())
+        self.capture_btn.clicked.connect(self._take_photo)
+        self.capture_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-size: 22px;
+                font-weight: bold;
+                padding: 22px;
+                border-radius: 8px;
+                letter-spacing: 1px;
+            }
+            QPushButton:hover   { background-color: #45a049; }
+            QPushButton:disabled{ background-color: #2d4a2d; color: #555; }
+        """)
+        right.addWidget(self.capture_btn)
+
+        # Bouton ouvrir dossier
+        folder_btn = QPushButton("📂  Ouvrir le dossier")
+        folder_btn.clicked.connect(lambda: os.startfile(Config.SAVE_DIR))
+        folder_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1565C0;
+                color: white; font-size: 14px;
+                padding: 10px; border-radius: 6px;
+            }
+            QPushButton:hover { background-color: #1976D2; }
+        """)
+        right.addWidget(folder_btn)
+
+        # Séparateur + bouton retour technicien
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: #333;")
+        right.addWidget(sep)
+
+        back_btn = QPushButton("⚙  Mode Technicien  [F11]")
+        back_btn.clicked.connect(self.mw.toggle_operator_mode)
+        back_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #37474F;
+                color: #aaa; font-size: 12px;
+                padding: 8px; border-radius: 5px;
+            }
+            QPushButton:hover { background-color: #455A64; color: white; }
+        """)
+        right.addWidget(back_btn)
+
+        root.addLayout(right, stretch=1)
+
+    # -- helpers UI --
+
+    def _card(self, title):
+        box = QGroupBox(title)
+        box.setStyleSheet("""
+            QGroupBox {
+                color: #aaa; font-size: 13px; font-weight: bold;
+                border: 1px solid #333; border-radius: 6px;
+                margin-top: 8px; padding-top: 6px;
+            }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; }
+        """)
+        return box
+
+    def _combo_style(self):
+        return """
+            QComboBox {
+                background-color: #263238; color: white;
+                border: 1px solid #455A64; border-radius: 5px;
+                padding: 8px; font-size: 16px;
+            }
+            QComboBox::drop-down { border: none; }
+            QComboBox QAbstractItemView {
+                background-color: #263238; color: white;
+                selection-background-color: #37474F;
+            }
+        """
+
+    def _input_style(self):
+        return """
+            QLineEdit {
+                background-color: #263238; color: white;
+                border: 1px solid #455A64; border-radius: 5px;
+                padding: 10px; font-size: 16px;
+            }
+            QLineEdit:focus { border: 1px solid #4CAF50; }
+        """
+
+    # -- slots --
+
+    def _on_set_changed(self, index):
+        """Propagate set change to MainWindow."""
+        # Synchroniser le combo de MainWindow (déclenche change_set via signal)
+        self.mw.set_combo.setCurrentIndex(index)
+
+    def _take_photo(self):
+        """Prise de vue : synchronise les champs puis délègue à MainWindow."""
+        # Copier nom/email vers MainWindow avant d'appeler take_photo
+        self.mw.name_input.setText(self.name_input.text())
+        self.mw.email_input.setText(self.email_input.text())
+
+        self.capture_btn.setEnabled(False)
+        self.capture_btn.setText("⏳ Traitement en cours...")
+        QApplication.processEvents()
+
+        self.mw.take_photo()
+
+        self.capture_btn.setEnabled(self.mw.capture_button.isEnabled())
+        self.capture_btn.setText("📷  PRENDRE LA VUE")
+
+    def update_montage(self, pixmap):
+        """Appelé par MainWindow à chaque frame de prévisualisation."""
+        self.montage_label.setPixmap(
+            pixmap.scaled(self.montage_label.size(),
+                          Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def set_camera_ready(self, ready: bool):
+        if ready:
+            self.status_label.setText("🟢 Caméra active")
+            self.status_label.setStyleSheet("color: #4CAF50; font-size: 13px; padding: 4px;")
+            self.capture_btn.setEnabled(True)
+        else:
+            self.status_label.setText("⏳ En attente de la caméra...")
+            self.status_label.setStyleSheet("color: #888; font-size: 13px; padding: 4px;")
+            self.capture_btn.setEnabled(False)
+
+    def sync_set(self, set_index):
+        """Synchronise le combo set depuis MainWindow."""
+        self.set_combo.blockSignals(True)
+        self.set_combo.setCurrentIndex(set_index)
+        self.set_combo.blockSignals(False)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_F11, Qt.Key_Escape):
+            self.mw.toggle_operator_mode()
+        else:
+            super().keyPressEvent(event)
+
+
+# ---------------------------------------------------------------------------
+# Fenêtre principale (mode technicien)
+# ---------------------------------------------------------------------------
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Studio Photo Fond Vert - Salon BD")
+        self.setWindowTitle("Studio Photo Fond Vert - Salon BD  |  Mode Technicien")
         self.setGeometry(100, 100, 1600, 900)
 
-        self.current_set = 1
-        self.camera_thread = None
-        self.processor = GreenScreenProcessor()
-        self.current_frame = None
-        self.person_position_x = 0
-        self.person_position_y = 0
+        # Chargement des paramètres persistants
+        self._settings = Settings.load()
 
-        # Cache UI : clé = set_id, valeur = (background_bgr, foreground_bgra)
-        # Chargé une seule fois par set depuis UI_fond*.jpg / UI_pp*.png
+        self.current_set       = self._settings["current_set"]
+        self.camera_thread     = None
+        self.processor         = GreenScreenProcessor()
+        self.current_frame     = None
+        self.person_position_x = self._settings["pos_x"]
+        self.person_position_y = self._settings["pos_y"]
+        self.person_scale_z    = self._settings["pos_z"] / 100.0
+        self._camera_ready     = False
+        self._show_mask        = self._settings["show_mask"]
+
         self._ui_cache = {}
 
-        # Coordonnées pleine résolution pour le montage final
-        set_config = Config.SETS[1]
+        set_config = Config.SETS[self.current_set]
         self.zone_info = {
             'largeur': set_config.zone_largeur,
             'hauteur': set_config.zone_hauteur,
-            'x': set_config.zone_x,
-            'y': set_config.zone_y
+            'x':       set_config.zone_x,
+            'y':       set_config.zone_y,
         }
 
         self.preview_timer = QTimer()
         self.preview_timer.timeout.connect(self.update_montage_preview)
 
+        self._progress_timer = QTimer()
+        self._progress_timer.setInterval(100)
+        self._progress_timer.timeout.connect(self._tick_progress)
+        self._progress_value = 0.0
+
+        # Fenêtre opérateur (créée une fois, affichée/cachée)
+        self._operator_win = None
+
         Config.ensure_save_dir()
         self.setup_ui()
+        self._apply_settings_to_ui()
         self.scan_cameras()
+
+    # ------------------------------------------------------------------
+    # Mode opérateur
+    # ------------------------------------------------------------------
+
+    def toggle_operator_mode(self):
+        """Bascule entre mode technicien (MainWindow) et mode opérateur (OperatorWindow)."""
+        if self._operator_win is None:
+            self._operator_win = OperatorWindow(self)
+
+        if self._operator_win.isVisible():
+            # Retour mode technicien
+            self._operator_win.hide()
+            self.show()
+            self.showNormal()
+        else:
+            # Passage mode opérateur
+            self.hide()
+            self._operator_win.showFullScreen()
+            # Synchroniser l'état
+            self._operator_win.set_camera_ready(self._camera_ready)
+            self._operator_win.sync_set(self.current_set - 1)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_F11:
+            self.toggle_operator_mode()
+        else:
+            super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------
+    # Persistance
+    # ------------------------------------------------------------------
+
+    def _collect_settings(self) -> dict:
+        return {
+            "hue_min":      self.hue_min.value(),
+            "hue_max":      self.hue_max.value(),
+            "sat_min":      self.sat_min.value(),
+            "val_min":      self.val_min.value(),
+            "erode":        self.erode_slider.value(),
+            "dilate":       self.dilate_slider.value(),
+            "smooth":       self.smooth_slider.value(),
+            "pos_x":        self.pos_x_slider.value(),
+            "pos_y":        self.pos_y_slider.value(),
+            "pos_z":        self.pos_z_slider.value(),
+            "current_set":  self.current_set,
+            "show_mask":    self.mask_check.isChecked(),
+            "live_preview": self.preview_check.isChecked(),
+        }
+
+    def _apply_settings_to_ui(self):
+        s = self._settings
+        widgets = [self.hue_min, self.hue_max, self.sat_min, self.val_min,
+                   self.erode_slider, self.dilate_slider, self.smooth_slider,
+                   self.pos_x_slider, self.pos_y_slider, self.pos_z_slider]
+        for w in widgets:
+            w.blockSignals(True)
+        self.hue_min.setValue(s["hue_min"])
+        self.hue_max.setValue(s["hue_max"])
+        self.sat_min.setValue(s["sat_min"])
+        self.val_min.setValue(s["val_min"])
+        self.erode_slider.setValue(s["erode"])
+        self.dilate_slider.setValue(s["dilate"])
+        self.smooth_slider.setValue(s["smooth"])
+        self.pos_x_slider.setValue(s["pos_x"])
+        self.pos_y_slider.setValue(s["pos_y"])
+        self.pos_z_slider.setValue(s["pos_z"])
+        self.mask_check.setChecked(s["show_mask"])
+        self.preview_check.setChecked(s["live_preview"])
+        for w in widgets:
+            w.blockSignals(False)
+        self.set_combo.blockSignals(True)
+        self.set_combo.setCurrentIndex(self.current_set - 1)
+        self.set_combo.blockSignals(False)
+        self.update_green_range()
+        self.update_morph_params()
+        self.update_person_position()
+        self.update_set_info_display()
 
     # ------------------------------------------------------------------
     # Cache UI
     # ------------------------------------------------------------------
 
     def _get_ui_assets(self, set_id):
-        """Retourne (background_bgr, foreground_bgra) depuis le cache UI.
-        Charge les fichiers UI_fond*.jpg / UI_pp*.png si besoin."""
         if set_id not in self._ui_cache:
             assets_path = Path(__file__).parent / "assets"
             cfg = Config.SETS[set_id]
             fond_path = assets_path / cfg.ui_fond_file
             pp_path   = assets_path / cfg.ui_pp_file
-
             if not fond_path.exists() or not pp_path.exists():
-                logger.warning(f"Fichiers UI manquants set {set_id}: {fond_path}, {pp_path}")
                 return None, None
-
             bg = cv2.imread(str(fond_path))
             pp = cv2.imread(str(pp_path), cv2.IMREAD_UNCHANGED)
-
             if bg is None or pp is None:
-                logger.error(f"Lecture impossible fichiers UI set {set_id}")
                 return None, None
-
-            # Normaliser pp en BGRA natif OpenCV
-            if pp.shape[2] == 3:
-                pp_bgra = cv2.cvtColor(pp, cv2.COLOR_BGR2BGRA)
-            else:
-                pp_bgra = pp.copy()
-
+            pp_bgra = cv2.cvtColor(pp, cv2.COLOR_BGR2BGRA) if pp.shape[2] == 3 else pp.copy()
             self._ui_cache[set_id] = (bg, pp_bgra)
-            logger.info(f"Cache UI set {set_id} : fond={bg.shape}, pp={pp_bgra.shape}")
-
         return self._ui_cache[set_id]
 
     # ------------------------------------------------------------------
-    # Interface utilisateur
+    # Interface technicien
     # ------------------------------------------------------------------
 
     def update_set_info_display(self):
@@ -114,7 +425,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_layout.addWidget(self.create_camera_group())
 
-        self.camera_label = QLabel("Aperçu caméra avec détourage")
+        self.camera_label = QLabel("Aperçu caméra")
         self.camera_label.setMinimumSize(640, 360)
         self.camera_label.setStyleSheet("border: 2px solid #444; background-color: #2b2b2b;")
         self.camera_label.setAlignment(Qt.AlignCenter)
@@ -133,10 +444,25 @@ class MainWindow(QMainWindow):
         self.montage_label.setAlignment(Qt.AlignCenter)
         preview_layout.addWidget(self.montage_label)
 
+        bottom_bar = QHBoxLayout()
         self.preview_check = QCheckBox("Aperçu en direct du montage")
         self.preview_check.setChecked(True)
         self.preview_check.stateChanged.connect(self.toggle_live_preview)
-        preview_layout.addWidget(self.preview_check)
+        bottom_bar.addWidget(self.preview_check)
+
+        # Bouton mode opérateur dans le panneau central
+        op_btn = QPushButton("🖥  Mode Opérateur  [F11]")
+        op_btn.clicked.connect(self.toggle_operator_mode)
+        op_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #37474F; color: #ccc;
+                font-size: 12px; padding: 6px 14px; border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #4CAF50; color: white; }
+        """)
+        bottom_bar.addStretch()
+        bottom_bar.addWidget(op_btn)
+        preview_layout.addLayout(bottom_bar)
         preview_group.setLayout(preview_layout)
         center_layout.addWidget(preview_group)
 
@@ -148,6 +474,17 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.create_info_group())
         self.create_capture_button()
         right_layout.addWidget(self.capture_button)
+
+        self.open_folder_button = QPushButton("📂 Ouvrir le dossier de sauvegarde")
+        self.open_folder_button.clicked.connect(lambda: os.startfile(Config.SAVE_DIR))
+        self.open_folder_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3; color: white;
+                font-size: 12px; padding: 8px; border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #1976D2; }
+        """)
+        right_layout.addWidget(self.open_folder_button)
 
         main_layout.addWidget(left_panel, 2)
         main_layout.addWidget(center_panel, 3)
@@ -177,6 +514,13 @@ class MainWindow(QMainWindow):
         cam_control_layout.addWidget(self.stop_button)
         camera_layout.addLayout(cam_control_layout)
 
+        self.camera_progress = QProgressBar()
+        self.camera_progress.setRange(0, 1000)
+        self.camera_progress.setValue(0)
+        self.camera_progress.setFormat("Initialisation de la caméra...")
+        self.camera_progress.setVisible(False)
+        camera_layout.addWidget(self.camera_progress)
+
         camera_group.setLayout(camera_layout)
         return camera_group
 
@@ -186,52 +530,53 @@ class MainWindow(QMainWindow):
 
         chroma_layout.addWidget(QLabel("Teinte min:"), 0, 0)
         self.hue_min = QSpinBox()
-        self.hue_min.setRange(0, 180)
-        self.hue_min.setValue(35)
+        self.hue_min.setRange(0, 180); self.hue_min.setValue(35)
         self.hue_min.valueChanged.connect(self.update_green_range)
         chroma_layout.addWidget(self.hue_min, 0, 1)
 
         chroma_layout.addWidget(QLabel("Teinte max:"), 0, 2)
         self.hue_max = QSpinBox()
-        self.hue_max.setRange(0, 180)
-        self.hue_max.setValue(85)
+        self.hue_max.setRange(0, 180); self.hue_max.setValue(85)
         self.hue_max.valueChanged.connect(self.update_green_range)
         chroma_layout.addWidget(self.hue_max, 0, 3)
 
         chroma_layout.addWidget(QLabel("Sat. min:"), 1, 0)
         self.sat_min = QSpinBox()
-        self.sat_min.setRange(0, 255)
-        self.sat_min.setValue(50)
+        self.sat_min.setRange(0, 255); self.sat_min.setValue(50)
         self.sat_min.valueChanged.connect(self.update_green_range)
         chroma_layout.addWidget(self.sat_min, 1, 1)
 
         chroma_layout.addWidget(QLabel("Lum. min:"), 1, 2)
         self.val_min = QSpinBox()
-        self.val_min.setRange(0, 255)
-        self.val_min.setValue(50)
+        self.val_min.setRange(0, 255); self.val_min.setValue(50)
         self.val_min.valueChanged.connect(self.update_green_range)
         chroma_layout.addWidget(self.val_min, 1, 3)
 
         chroma_layout.addWidget(QLabel("Érosion:"), 2, 0)
         self.erode_slider = QSlider(Qt.Horizontal)
-        self.erode_slider.setRange(0, 5)
-        self.erode_slider.setValue(1)
+        self.erode_slider.setRange(0, 5); self.erode_slider.setValue(1)
         self.erode_slider.valueChanged.connect(self.update_morph_params)
         chroma_layout.addWidget(self.erode_slider, 2, 1)
 
         chroma_layout.addWidget(QLabel("Dilatation:"), 2, 2)
         self.dilate_slider = QSlider(Qt.Horizontal)
-        self.dilate_slider.setRange(0, 5)
-        self.dilate_slider.setValue(2)
+        self.dilate_slider.setRange(0, 5); self.dilate_slider.setValue(2)
         self.dilate_slider.valueChanged.connect(self.update_morph_params)
         chroma_layout.addWidget(self.dilate_slider, 2, 3)
 
         chroma_layout.addWidget(QLabel("Lissage:"), 3, 0)
         self.smooth_slider = QSlider(Qt.Horizontal)
-        self.smooth_slider.setRange(1, 10)
-        self.smooth_slider.setValue(5)
+        self.smooth_slider.setRange(1, 10); self.smooth_slider.setValue(5)
         self.smooth_slider.valueChanged.connect(self.update_morph_params)
         chroma_layout.addWidget(self.smooth_slider, 3, 1)
+
+        self.mask_check = QCheckBox("Afficher le masque alpha")
+        self.mask_check.setChecked(False)
+        self.mask_check.setToolTip(
+            "Blanc = personne conservée  |  Noir = fond supprimé\n"
+            "Utile pour affiner les réglages de détourage.")
+        self.mask_check.stateChanged.connect(self.toggle_mask_view)
+        chroma_layout.addWidget(self.mask_check, 4, 0, 1, 4)
 
         chroma_group.setLayout(chroma_layout)
         return chroma_group
@@ -265,7 +610,7 @@ class MainWindow(QMainWindow):
         return set_group
 
     def create_position_group(self):
-        position_group = QGroupBox("Position de la personne")
+        position_group = QGroupBox("Position / Zoom de la personne")
         position_layout = QGridLayout()
 
         position_layout.addWidget(QLabel("X:"), 0, 0)
@@ -283,6 +628,18 @@ class MainWindow(QMainWindow):
         position_layout.addWidget(self.pos_y_slider, 1, 1)
         self.pos_y_value = QLabel("0")
         position_layout.addWidget(self.pos_y_value, 1, 2)
+
+        position_layout.addWidget(QLabel("Z (zoom):"), 2, 0)
+        self.pos_z_slider = QSlider(Qt.Horizontal)
+        self.pos_z_slider.setRange(50, 200); self.pos_z_slider.setValue(100)
+        self.pos_z_slider.valueChanged.connect(self.update_person_position)
+        position_layout.addWidget(self.pos_z_slider, 2, 1)
+        self.pos_z_value = QLabel("100%")
+        position_layout.addWidget(self.pos_z_value, 2, 2)
+
+        reset_btn = QPushButton("Réinitialiser")
+        reset_btn.clicked.connect(self.reset_position)
+        position_layout.addWidget(reset_btn, 3, 0, 1, 3)
 
         position_group.setLayout(position_layout)
         return position_group
@@ -308,12 +665,9 @@ class MainWindow(QMainWindow):
         self.capture_button = QPushButton("PRENDRE LA VUE")
         self.capture_button.setStyleSheet("""
             QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                font-size: 16px;
-                font-weight: bold;
-                padding: 15px;
-                border-radius: 5px;
+                background-color: #4CAF50; color: white;
+                font-size: 16px; font-weight: bold;
+                padding: 15px; border-radius: 5px;
             }
             QPushButton:hover { background-color: #45a049; }
             QPushButton:disabled { background-color: #cccccc; }
@@ -329,8 +683,8 @@ class MainWindow(QMainWindow):
         self.camera_combo.clear()
         cameras = CameraScanner.scan_cameras()
         if cameras:
-            for cam in cameras:
-                self.camera_combo.addItem(cam['name'], cam['id'])
+            for i, cam in enumerate(cameras):
+                self.camera_combo.addItem(f"Caméra {i}", cam['id'])
         else:
             self.camera_combo.addItem("Aucune caméra trouvée")
 
@@ -340,6 +694,14 @@ class MainWindow(QMainWindow):
             return
 
         camera_id = self.camera_combo.currentData()
+        self._camera_ready   = False
+        self._progress_value = 0.0
+
+        self.camera_progress.setValue(0)
+        self.camera_progress.setFormat("Initialisation de la caméra...")
+        self.camera_progress.setVisible(True)
+        self._progress_timer.start()
+
         self.camera_thread = CameraThread()
         self.camera_thread.set_camera(camera_id)
         self.camera_thread.change_pixmap_signal.connect(self.update_image)
@@ -349,42 +711,78 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.capture_button.setEnabled(True)
-        self.preview_timer.start(200)  # 5 fps
+        self.preview_timer.start(200)
+
+    def _tick_progress(self):
+        if self._camera_ready:
+            self.camera_progress.setValue(1000)
+            self.camera_progress.setFormat("Caméra prête ✓")
+            self._progress_timer.stop()
+            QTimer.singleShot(800, lambda: self.camera_progress.setVisible(False))
+        else:
+            if self._progress_value < 900:
+                self._progress_value += 3.6
+                self.camera_progress.setValue(int(self._progress_value))
+
+    def _safe_stop_thread(self):
+        if self.camera_thread is None:
+            return
+        self.camera_thread.stop()
+        if not self.camera_thread.wait(3000):
+            logger.warning("Thread caméra non répondu — terminaison forcée")
+            self.camera_thread.terminate()
+            self.camera_thread.wait(1000)
+        self.camera_thread = None
 
     def stop_camera(self):
+        self._progress_timer.stop()
         self.preview_timer.stop()
-        if self.camera_thread:
-            self.camera_thread.stop()
-            self.camera_thread = None
+        self.camera_progress.setVisible(False)
+        self._safe_stop_thread()
+        self._camera_ready = False
+        self.current_frame = None
         self.camera_label.clear()
         self.camera_label.setText("Aperçu caméra")
         self.montage_label.clear()
         self.montage_label.setText("Aperçu du montage")
+        self.set_preview.clear()
+        self.set_preview.setText("Aperçu du set")
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.capture_button.setEnabled(False)
+        if self._operator_win:
+            self._operator_win.set_camera_ready(False)
 
     def update_image(self, frame):
-        """Affichage caméra gauche avec détourage — couleurs correctes BGR→RGB"""
         self.current_frame = frame.copy()
+
+        if not self._camera_ready:
+            self._camera_ready = True
+            self.update_set_preview()
+            self.update_set_info_display()
+            if self._operator_win and self._operator_win.isVisible():
+                self._operator_win.set_camera_ready(True)
+
         try:
-            person_bgra, _ = self.processor.extract_person(frame)
-            if person_bgra is not None and person_bgra.size > 0:
-                # BGRA natif OpenCV → RGB pour Qt
-                rgb_image = cv2.cvtColor(person_bgra, cv2.COLOR_BGRA2RGB)
-                h, w, ch = rgb_image.shape
-                qt_image = QImage(rgb_image.tobytes(), w, h, ch * w, QImage.Format_RGB888)
-                scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
-                    self.camera_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.camera_label.setPixmap(scaled_pixmap)
+            person_bgra, mask = self.processor.extract_person(frame)
+
+            if self._show_mask:
+                display = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB)
+            else:
+                display = cv2.cvtColor(person_bgra, cv2.COLOR_BGRA2RGB)
+
+            h, w, ch = display.shape
+            qt_image = QImage(display.tobytes(), w, h, ch * w, QImage.Format_RGB888)
+            self.camera_label.setPixmap(
+                QPixmap.fromImage(qt_image).scaled(
+                    self.camera_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
         except Exception as e:
             logger.error(f"Erreur update_image: {e}")
 
     def update_montage_preview(self):
-        """Aperçu montage central — utilise les fichiers UI (600px) en cache"""
         if not self.preview_check.isChecked() or self.current_frame is None:
             return
-
         try:
             set_config = Config.SETS[self.current_set]
             ui_bg, ui_pp = self._get_ui_assets(self.current_set)
@@ -394,15 +792,22 @@ class MainWindow(QMainWindow):
             preview = self.processor.create_preview(
                 self.current_frame, ui_bg, ui_pp,
                 self.person_position_x, self.person_position_y,
-                set_config
+                self.person_scale_z, set_config
             )
 
             if preview is not None and preview.size > 0:
                 h, w, ch = preview.shape
                 qt_image = QImage(preview.tobytes(), w, h, ch * w, QImage.Format_RGB888)
-                scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
-                    self.montage_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.montage_label.setPixmap(scaled_pixmap)
+                pixmap = QPixmap.fromImage(qt_image)
+
+                # Afficher dans le panneau technicien
+                self.montage_label.setPixmap(
+                    pixmap.scaled(self.montage_label.size(),
+                                  Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+                # Envoyer aussi au mode opérateur s'il est actif
+                if self._operator_win and self._operator_win.isVisible():
+                    self._operator_win.update_montage(pixmap)
 
         except Exception as e:
             logger.error(f"Erreur update_montage_preview: {e}")
@@ -415,7 +820,16 @@ class MainWindow(QMainWindow):
             self.montage_label.clear()
             self.montage_label.setText("Aperçu du montage")
 
+    def toggle_mask_view(self, state):
+        self._show_mask = (state == Qt.Checked)
+        self.camera_label.setStyleSheet(
+            "border: 2px solid #FF9800; background-color: #1a1a1a;"
+            if self._show_mask else
+            "border: 2px solid #444; background-color: #2b2b2b;")
+
     def handle_camera_error(self, error_msg):
+        self._progress_timer.stop()
+        self.camera_progress.setVisible(False)
         QMessageBox.critical(self, "Erreur caméra", error_msg)
         self.stop_camera()
 
@@ -425,19 +839,21 @@ class MainWindow(QMainWindow):
 
     def change_set(self, index):
         self.current_set = index + 1
-        self.update_set_preview()
+        if self._camera_ready:
+            self.update_set_preview()
         set_config = Config.SETS[self.current_set]
         self.zone_info = {
             'largeur': set_config.zone_largeur,
             'hauteur': set_config.zone_hauteur,
-            'x': set_config.zone_x,
-            'y': set_config.zone_y
+            'x':       set_config.zone_x,
+            'y':       set_config.zone_y,
         }
         self.update_set_info_display()
-        logger.info(f"Set {self.current_set}, zone_info: {self.zone_info}")
+        # Synchroniser le combo de la fenêtre opérateur si elle existe
+        if self._operator_win:
+            self._operator_win.sync_set(index)
 
     def update_set_preview(self):
-        """Aperçu statique fond+pp dans le panneau droit via cache UI"""
         try:
             ui_bg, ui_pp = self._get_ui_assets(self.current_set)
             if ui_bg is None:
@@ -451,17 +867,17 @@ class MainWindow(QMainWindow):
                 else:
                     ui_pp_r = ui_pp
                 alpha = ui_pp_r[:, :, 3].astype(np.float32) / 255.0
-                a = alpha[:, :, np.newaxis]
+                a   = alpha[:, :, np.newaxis]
                 src = ui_pp_r[:, :, :3].astype(np.float32)
                 dst = fond_small.astype(np.float32)
                 fond_small = np.clip(a * src + (1 - a) * dst, 0, 255).astype(np.uint8)
 
-            # BGR → RGB pour Qt
             rgb_image = cv2.cvtColor(fond_small, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb_image.shape
             qt_image = QImage(rgb_image.tobytes(), w, h, ch * w, QImage.Format_RGB888)
-            self.set_preview.setPixmap(QPixmap.fromImage(qt_image).scaled(
-                self.set_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.set_preview.setPixmap(
+                QPixmap.fromImage(qt_image).scaled(
+                    self.set_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
         except Exception as e:
             logger.error(f"Erreur update_set_preview: {e}")
@@ -474,24 +890,29 @@ class MainWindow(QMainWindow):
     def update_green_range(self):
         self.processor.update_green_range(
             self.hue_min.value(), self.hue_max.value(),
-            self.sat_min.value(), self.val_min.value()
-        )
+            self.sat_min.value(), self.val_min.value())
 
     def update_morph_params(self):
         self.processor.update_morph_params(
             self.erode_slider.value(),
             self.dilate_slider.value(),
-            self.smooth_slider.value()
-        )
+            self.smooth_slider.value())
 
     def update_person_position(self):
         self.person_position_x = self.pos_x_slider.value()
         self.person_position_y = self.pos_y_slider.value()
+        self.person_scale_z    = self.pos_z_slider.value() / 100.0
         self.pos_x_value.setText(str(self.person_position_x))
         self.pos_y_value.setText(str(self.person_position_y))
+        self.pos_z_value.setText(f"{self.pos_z_slider.value()}%")
+
+    def reset_position(self):
+        self.pos_x_slider.setValue(0)
+        self.pos_y_slider.setValue(0)
+        self.pos_z_slider.setValue(100)
 
     # ------------------------------------------------------------------
-    # Prise de vue
+    # Prise de vue (appelée depuis les deux modes)
     # ------------------------------------------------------------------
 
     def take_photo(self):
@@ -500,7 +921,7 @@ class MainWindow(QMainWindow):
             return
 
         person_name = self.name_input.text().strip()
-        email = self.email_input.text().strip()
+        email       = self.email_input.text().strip()
 
         if not person_name:
             QMessageBox.warning(self, "Erreur", "Veuillez entrer un nom")
@@ -515,9 +936,9 @@ class MainWindow(QMainWindow):
 
         try:
             assets_path = Path(__file__).parent / "assets"
-            set_config = Config.SETS[self.current_set]
-            fond_path = assets_path / set_config.fond_file   # pleine résolution
-            pp_path   = assets_path / set_config.pp_file
+            set_config  = Config.SETS[self.current_set]
+            fond_path   = assets_path / set_config.fond_file
+            pp_path     = assets_path / set_config.pp_file
 
             if not fond_path.exists():
                 QMessageBox.critical(self, "Erreur", f"Fichier non trouvé: {fond_path}")
@@ -531,25 +952,18 @@ class MainWindow(QMainWindow):
             final_image = self.processor.composite_image(
                 person_bgra, fond_path, pp_path,
                 self.person_position_x, self.person_position_y,
+                self.person_scale_z,
                 self.zone_info, set_config
             )
 
             h, w = final_image.shape[:2]
-            logger.info(f"Image finale: {w}x{h} px")
-
             filepath = self.processor.save_with_metadata(
                 final_image, person_name, email, self.current_set
             )
 
             QMessageBox.information(self, "Succès",
-                                    f"Photo sauvegardée:\n{filepath}\n"
-                                    f"Dimensions: {w} x {h} pixels")
-
-            reply = QMessageBox.question(self, "Ouvrir le dossier",
-                                         "Voulez-vous ouvrir le dossier de sauvegarde?",
-                                         QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                os.startfile(Config.SAVE_DIR)
+                                    f"Photo sauvegardée :\n{filepath}\n"
+                                    f"Dimensions : {w} x {h} pixels")
 
         except Exception as e:
             logger.error(f"Erreur take_photo: {e}")
@@ -559,16 +973,28 @@ class MainWindow(QMainWindow):
             self.capture_button.setEnabled(True)
             self.capture_button.setText("PRENDRE LA VUE")
 
+    # ------------------------------------------------------------------
+    # Fermeture
+    # ------------------------------------------------------------------
+
     def closeEvent(self, event):
-        self.stop_camera()
+        Settings.save(self._collect_settings())
+        self._progress_timer.stop()
+        self.preview_timer.stop()
+        self._safe_stop_thread()
+        if self._operator_win:
+            self._operator_win.close()
         event.accept()
 
+
+# ---------------------------------------------------------------------------
+# Point d'entrée
+# ---------------------------------------------------------------------------
 
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    font = QFont("Arial", 9)
-    app.setFont(font)
+    app.setFont(QFont("Arial", 9))
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
